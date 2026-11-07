@@ -5,7 +5,7 @@ const fs = require('fs');
 const { parseExcel, normalizeMVA, parseDecimal, isTotalOrAuxiliaryRow } = require('../src/parser/excelParser');
 const { parseSped, generateDebitsSpreadsheet } = require('../src/parser/spedParser');
 const { groupInvoices, formatObservation, computeIdempotencyHash, abbreviateProductName } = require('../src/engine/grouper');
-const { analyzeDueDate } = require('../src/utils/calendar');
+const { analyzeDueDate, getDefaultDueDate } = require('../src/utils/calendar');
 const { resolveBatchDirectory, isFilial, sanitizeFileName, checkInvoiceIdempotency, getStandardPdfName } = require('../src/storage/pathManager');
 const { validateDareAgainstInvoice, parseDarePdf, extractPdfText, unescapePdfString } = require('../src/audit/dareValidator');
 const XLSX = require('xlsx');
@@ -150,7 +150,7 @@ runTest('Para a NF 25105: deve separar grupos de farinha (MVA 76%) e sardinha (M
   assert.strictEqual(nf25105.itemCount, 4, 'NF 25105 deve ter 4 itens');
   assert.strictEqual(nf25105.valorGuia, 204.55, 'Valor ST da NF 25105 deve ser R$ 204,55 (22.69 + 87.05 + 49.76 + 45.05)');
 
-  const expectedObs = 'DARE ICMS ST REF COMPRA DE FAR TRIGO D BENTA CFER 1KG, FAR TRIGO D BENTA SFERM 1KG E FAR TRIGO ROSA BRANCA SFERM 1KG NA NF 25105 (MVA 76%) E SARDINHA 88 TOM 125G (MVA 65%)';
+  const expectedObs = 'DARE ICMS ST REF COMPRA DE FAR TRIGO D BENTA CFER 1KG, FAR TRIGO D BENTA SFERM 1KG E FAR TRIGO ROSA BRANCA SFERM 1KG NA NF 25105 (MVA 76%) E SARDINHA 88 TOM 125G (MVA 65%)\nChave NFe: 21260803995515021083550020000251051000251061';
   assert.strictEqual(nf25105.observation, expectedObs, 'Texto da observação da NF 25105 deve seguir o padrão exato da especificação');
 });
 
@@ -161,7 +161,7 @@ runTest('Para a NF 25101: produto único e MVA único', () => {
   assert.strictEqual(nf25101.valorGuia, 118.86);
   assert.strictEqual(
     nf25101.observation,
-    'DARE ICMS ST REF COMPRA DE CAFE M MOIDO AVAC PCT 250G NA NF 25101 (MVA 26,5%)'
+    'DARE ICMS ST REF COMPRA DE CAFE M MOIDO AVAC PCT 250G NA NF 25101 (MVA 26,5%)\nChave NFe: 21260803995515021083550020000251011000251020'
   );
 });
 
@@ -193,6 +193,20 @@ runTest('Deve alertar feriado estadual do Tocantins (05/10 - Criação do Estado
   assert.strictEqual(dHol.isNonBusinessDay, true);
   assert(dHol.reason.includes('Criação do Estado do Tocantins'));
   assert.strictEqual(dHol.suggestedNextBusinessDay, '06/10/2026');
+});
+
+runTest('getDefaultDueDate deve retornar dia 09 do mês atual da data do computador', () => {
+  const now = new Date();
+  const expectedMonth = String(now.getMonth() + 1).padStart(2, '0');
+  const expectedYear = now.getFullYear();
+  const expected = `09/${expectedMonth}/${expectedYear}`;
+  const actual = getDefaultDueDate();
+  assert.strictEqual(actual, expected);
+
+  // analyzeDueDate sem argumentos deve utilizar o vencimento padrão do mês atual
+  const analysis = analyzeDueDate();
+  assert.strictEqual(analysis.isValid, true);
+  assert.strictEqual(analysis.dateStr, expected);
 });
 
 // ----------------------------------------------------
@@ -320,6 +334,41 @@ runTest('Abreviador com 25 produtos na mesma nota deve manter <= 400 caracteres,
   assert(obs.includes('25105'), 'Deve conter o número da NF 25105');
   assert(obs.includes('40%'), 'Deve conter o percentual de MVA 40%');
   assert(obs.startsWith('DARE ICMS ST REF COMPRA DE '), 'Deve conter o prefixo regulamentar');
+});
+
+runTest('Resumo adaptativo para NF com muitos produtos (NF 150879) deve incluir NF, MVAs, Chave NFe e <= 400 chars', () => {
+  const chave = '35260950248731000129550010001508791860065783';
+  const nf150879Items = [
+    { itemNum: 1, produto: 'VALVULA REGULADORA PRESSAO SCANIA113', mva: { num: 99.69, str: '99,69%' }, icmsST: 41.13, chaveAcesso: chave },
+    { itemNum: 2, produto: 'VALVULA SOLENOIDE 3/2 VIA TRANSF VOLK CONSTELL 24', mva: { num: 106.14, str: '106,14%' }, icmsST: 192.91, chaveAcesso: chave },
+    { itemNum: 3, produto: 'CILINDRO DE EMBREAGEM SCANIA 124/114 AP 98 HASTE L', mva: { num: 99.69, str: '99,69%' }, icmsST: 123.21, chaveAcesso: chave },
+    { itemNum: 4, produto: 'VALVULA REGULADORA PRESSAO ANTIGA FERRO VW/VV/MB', mva: { num: 99.69, str: '99,69%' }, icmsST: 41.13, chaveAcesso: chave },
+    { itemNum: 5, produto: 'REPARO CUICA SCANIA/VOLVO/MERCEDES 24X24 E 20X24', mva: { num: 99.69, str: '99,69%' }, icmsST: 114.88, chaveAcesso: chave },
+    { itemNum: 6, produto: 'REPARO CUICAO TRAS SC/VO/MB/ 24X30 (TIPO ORIGINAL)', mva: { num: 99.69, str: '99,69%' }, icmsST: 100.70, chaveAcesso: chave },
+    { itemNum: 7, produto: 'SILENCIADOR DE DESCARGA VALVULA APU SC/VV', mva: { num: 106.14, str: '106,14%' }, icmsST: 13.89, chaveAcesso: chave },
+    { itemNum: 8, produto: 'VALVULA APU SCANIA 124 SERIE 4 (TODOS)', mva: { num: 106.14, str: '106,14%' }, icmsST: 114.90, chaveAcesso: chave },
+    { itemNum: 9, produto: 'VALVULA NIVELADORA VW/CARRETA SUSPENSAO A AR (KIT)', mva: { num: 99.69, str: '99,69%' }, icmsST: 100.19, chaveAcesso: chave },
+    { itemNum: 10, produto: 'REPARO CAB COMPRESSOR VOLVO FH 13 2008/...DUPLO', mva: { num: 99.69, str: '99,69%' }, icmsST: 187.13, chaveAcesso: chave },
+    { itemNum: 11, produto: 'SILENCIADOR DE DESCARGA VALVULA APS2 SCANIA SERI 5', mva: { num: 99.69, str: '99,69%' }, icmsST: 156.06, chaveAcesso: chave },
+    { itemNum: 12, produto: 'REPARO VALVULA RELE MESTRE CARRE 4/3SAIDA PREMO', mva: { num: 99.69, str: '99,69%' }, icmsST: 103.52, chaveAcesso: chave },
+    { itemNum: 13, produto: 'REPARO CAB COMPRESSOR VOLVO FH 12 MODER MONO KNOR', mva: { num: 99.69, str: '99,69%' }, icmsST: 20.67, chaveAcesso: chave },
+    { itemNum: 14, produto: 'REPARO CAB COMPRESSOR KNOR 88M SC124 VOLVO FH DUPL', mva: { num: 99.69, str: '99,69%' }, icmsST: 133.60, chaveAcesso: chave },
+    { itemNum: 15, produto: 'REPARO VALVULA APU SECADOR KNORR VOLVO FH/NH12', mva: { num: 99.69, str: '99,69%' }, icmsST: 33.98, chaveAcesso: chave },
+    { itemNum: 16, produto: 'REPARO P/ CONEXOES PNEUMATICAS 16MM', mva: { num: 99.69, str: '99,69%' }, icmsST: 15.58, chaveAcesso: chave },
+    { itemNum: 17, produto: 'VALVULA RELE ROSCA 16X22X22X22MM BAIXA TODAS', mva: { num: 106.14, str: '106,14%' }, icmsST: 65.66, chaveAcesso: chave },
+    { itemNum: 18, produto: 'REPARO SECADOR DE AR VAL APU IVECO STRALYS LA 8124', mva: { num: 99.69, str: '99,69%' }, icmsST: 152.72, chaveAcesso: chave }
+  ];
+
+  const obs = formatObservation('150879', nf150879Items, { revenueCode: '140', chaveAcesso: chave });
+
+  assert(obs.length <= 400, `Observação deve respeitar limite de 400 caracteres (tamanho real: ${obs.length})`);
+  assert(obs.includes('150879'), 'Deve conter o número da nota 150879');
+  assert(obs.includes(chave), 'Deve conter a Chave NFe de 44 dígitos');
+  assert(obs.includes('99,69%'), 'Deve conter a MVA 99,69%');
+  assert(obs.includes('106,14%'), 'Deve conter a MVA 106,14%');
+  assert(obs.includes('E OUTROS (14 ITENS)'), 'Deve conter resumo adaptativo do grupo 1');
+  assert(obs.includes('E OUTROS (4 ITENS)'), 'Deve conter resumo adaptativo do grupo 2');
+  assert(!obs.includes('VALVULA REGULA,'), 'Não deve truncar produtos em pedaços mutilados de 10 caracteres');
 });
 
 // ----------------------------------------------------
@@ -1090,6 +1139,117 @@ async function runServerTests() {
       assert(htmlContent.includes('btnResetAllCard1'), 'index.html deve ter botão no Card 1');
       assert(htmlContent.includes('btnResetAllExec'), 'index.html deve ter botão na barra de execução');
       assert(htmlContent.includes('Nova Geração'), 'index.html deve conter o rótulo Nova Geração');
+    });
+
+    runTest('Interface deve inicializar data de vencimento dinamicamente com o mês atual da data do computador', () => {
+      const htmlPath = path.join(__dirname, '../public/index.html');
+      const htmlContent = fs.readFileSync(htmlPath, 'utf8');
+      assert(htmlContent.includes('getDefaultDueDate()'), 'index.html deve definir getDefaultDueDate()');
+      assert(!htmlContent.includes('value="09/09/2026"'), 'index.html não deve conter 09/09/2026 fixado no inputDueDate');
+    });
+
+    console.log('\n--- 13. Testes de Suporte ao DIFAL (Cód. 150 - Apuração e Operação) ---');
+    runTest('Interface deve conter seletor de modalidade DIFAL (Apuração e Operação)', () => {
+      const htmlPath = path.join(__dirname, '../public/index.html');
+      const htmlContent = fs.readFileSync(htmlPath, 'utf8');
+      assert(htmlContent.includes('btnDifalApuracao'), 'index.html deve conter botão btnDifalApuracao');
+      assert(htmlContent.includes('btnDifalOperacao'), 'index.html deve conter botão btnDifalOperacao');
+      assert(htmlContent.includes('spedDifalOptionsContainer'), 'index.html deve conter container spedDifalOptionsContainer');
+    });
+
+    runTest('Nomenclatura oficial de PDFs para DIFAL por Apuração e por Operação', () => {
+      const { getStandardPdfName } = require('../src/storage/pathManager');
+      const pdfApuracao = getStandardPdfName('DIFAL APURAÇÃO 09/2026', 'F S MARQUES LTDA - ME', '150');
+      assert.strictEqual(pdfApuracao, 'DARE ICMS DIFAL APURACAO 09-2026 - F S MARQUES LTDA - ME.pdf');
+
+      const pdfOperacao = getStandardPdfName('231796', 'F S MARQUES LTDA - ME', '150');
+      assert.strictEqual(pdfOperacao, 'DARE ICMS DIFAL NF 231796 - F S MARQUES LTDA - ME.pdf');
+    });
+
+    runTest('parseSped deve suportar alternância entre Apuração e Operação no DIFAL', () => {
+      const sampleSped = [
+        '|0000|018|0|01092026|30092026|F S MARQUES LTDA|10674931000129||TO|294137785|1721000|||A|1|',
+        '|0150|10000405|FORNECEDOR TESTE|1058|07851862003001||520000000|||',
+        '|E110|4539,06|0|0|0|0|0|0|0|0|0|0|4539,06|0|51,15|',
+        '|E111|TO055010|DIFAL ENTRADA|51,15|',
+        '|E113|10000405|55|001||231796|24082026||51,15|52260807851862003001550010002317961245699882|',
+        '|E116|000|4539,06|09102026|110|||||REF ICMS NORMAL|092026|',
+        '|E116|003|51,15|09102026|150|||||REF DIFAL APURACAO|092026|',
+        '|9999|8|'
+      ].join('\r\n');
+
+      const buf = Buffer.from(sampleSped, 'latin1');
+      const resApuracao = parseSped(buf, { difalMode: 'apuracao' });
+      assert.strictEqual(resApuracao.hasDifal, true);
+      assert.strictEqual(resApuracao.activeDifalMode, 'apuracao');
+      const difalAp = resApuracao.debits.find(d => d.codigoReceita === '150');
+      assert(difalAp);
+      assert.strictEqual(difalAp.subCodigo, '1');
+      assert.strictEqual(difalAp.tipo, 'DIFAL_APURACAO');
+      assert.strictEqual(difalAp.valorGuia, 51.15);
+
+      const resOperacao = parseSped(buf, { difalMode: 'operacao' });
+      assert.strictEqual(resOperacao.hasDifal, true);
+      assert.strictEqual(resOperacao.activeDifalMode, 'operacao');
+      const difalOp = resOperacao.debits.find(d => d.codigoReceita === '150');
+      assert(difalOp);
+      assert.strictEqual(difalOp.subCodigo, '2');
+      assert.strictEqual(difalOp.tipo, 'DIFAL_OPERACAO');
+      assert.strictEqual(difalOp.nf, '231796');
+      assert.strictEqual(difalOp.chaveAcesso, '52260807851862003001550010002317961245699882');
+      assert.strictEqual(difalOp.valorGuia, 51.15);
+    });
+
+    runTest('Deve auto-detectar dados do contribuinte (IE, CNPJ, Razão Social) a partir de planilha com metadados ou colunas', () => {
+      // Teste A: via colunas 'Inscrição Estadual' e 'CNPJ Destinatário'
+      const wsDataA = [
+        ['Nº Nota', 'Descrição do Produto', '%MVA', 'ICMS ST', 'Inscrição Estadual', 'CNPJ Destinatário', 'Destinatário (Cliente)'],
+        ['1001', 'PRODUTO TESTE', '48.5%', 150.0, '29.515.340-7', '43.037.906/0001-93', 'EMPRESA TESTE LTDA']
+      ];
+      const wbA = XLSX.utils.book_new();
+      const wsA = XLSX.utils.aoa_to_sheet(wsDataA);
+      XLSX.utils.book_append_sheet(wbA, wsA, 'Planilha1');
+      const bufA = XLSX.write(wbA, { type: 'buffer', bookType: 'xlsx' });
+      const parsedA = parseExcel(bufA);
+      assert.strictEqual(parsedA.taxpayer.ie, '295153407');
+      assert.strictEqual(parsedA.taxpayer.cnpj, '43037906000193');
+      assert.strictEqual(parsedA.taxpayer.razaoSocial, 'EMPRESA TESTE LTDA');
+
+      // Teste B: via aba dedicada 'Contribuinte'
+      const wsDataB = [
+        ['Nº Nota', 'Descrição do Produto', '%MVA', 'ICMS ST'],
+        ['1002', 'PRODUTO TESTE 2', '48.5%', 200.0]
+      ];
+      const wsContribData = [
+        ['Campo', 'Valor'],
+        ['Razão Social', 'S A MENDANHA LTDA'],
+        ['CNPJ', '43.037.906/0001-93'],
+        ['Inscrição Estadual (I.E.)', '295153407'],
+        ['UF', 'TO']
+      ];
+      const wbB = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wbB, XLSX.utils.aoa_to_sheet(wsDataB), 'Planilha1');
+      XLSX.utils.book_append_sheet(wbB, XLSX.utils.aoa_to_sheet(wsContribData), 'Contribuinte');
+      const bufB = XLSX.write(wbB, { type: 'buffer', bookType: 'xlsx' });
+      const parsedB = parseExcel(bufB);
+      assert.strictEqual(parsedB.taxpayer.ie, '295153407');
+      assert.strictEqual(parsedB.taxpayer.cnpj, '43037906000193');
+      assert.strictEqual(parsedB.taxpayer.razaoSocial, 'S A MENDANHA LTDA');
+      assert.strictEqual(parsedB.taxpayer.uf, 'TO');
+
+      // Teste C: via linha pré-cabeçalho
+      const wsDataC = [
+        ['Contribuinte: AUTO PECAS TOCANTINS LTDA | CNPJ: 12.345.678/0001-95 | I.E.: 294063102'],
+        ['Nº Nota', 'Descrição do Produto', '%MVA', 'ICMS ST'],
+        ['1003', 'PECA TESTE', '48.5%', 80.0]
+      ];
+      const wbC = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wbC, XLSX.utils.aoa_to_sheet(wsDataC), 'Planilha1');
+      const bufC = XLSX.write(wbC, { type: 'buffer', bookType: 'xlsx' });
+      const parsedC = parseExcel(bufC);
+      assert.strictEqual(parsedC.taxpayer.ie, '294063102');
+      assert.strictEqual(parsedC.taxpayer.cnpj, '12345678000195');
+      assert.strictEqual(parsedC.taxpayer.razaoSocial, 'AUTO PECAS TOCANTINS LTDA');
     });
   } finally {
     server.close();

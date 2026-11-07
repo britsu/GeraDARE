@@ -66,7 +66,7 @@ function formatSpedCompetence(c) {
  * - E250: ICMS ST Debts (Cód. 130 / Subcódigo b)
  * - E116: ICMS Normal Debts (if present)
  */
-function parseSped(fileBufferOrContent) {
+function parseSped(fileBufferOrContent, options = {}) {
   let content = '';
   if (Buffer.isBuffer(fileBufferOrContent)) {
     // Try utf8 first, if replacement chars exist or latin1 chars present, handle cleanly
@@ -91,10 +91,16 @@ function parseSped(fileBufferOrContent) {
     competenciaFolder: ''
   };
 
-  const debits = [];
+  const participants = new Map();
+  const fdeDebits = [];
+  const stApuracaoDebits = [];
+  const icmsNormalDebits = [];
+  const difalApuracaoDebits = [];
+  const difalOperacaoRaw = [];
+  let currentE111 = null;
   let defaultDueDate = '';
 
-  // First pass: extract 0000 header and find default due dates
+  // First pass: extract 0000 header, participants 0150, and find default due dates
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line.startsWith('|')) continue;
@@ -131,6 +137,22 @@ function parseSped(fileBufferOrContent) {
         competencia: comp,
         competenciaFolder: comp ? comp.replace('/', '-') : ''
       };
+    } else if (reg === '0150') {
+      // |0150|COD_PART|NOME|COD_PAIS|CNPJ|CPF|IE|COD_MUN|SUFRAMA|END|NUM|COMPL|BAIRRO|
+      const codPart = (parts[2] || '').trim();
+      const nome = (parts[3] || '').trim();
+      const cnpj = (parts[5] || '').trim();
+      const cpf = (parts[6] || '').trim();
+      const ie = (parts[7] || '').trim();
+      if (codPart) {
+        participants.set(codPart, {
+          codPart,
+          nome,
+          cnpj: formatCNPJ(cnpj),
+          cpf,
+          ie
+        });
+      }
     } else if (reg === 'E250') {
       // Look for due date in E250 to reuse for FDE if needed
       const dtVctoRaw = parts[4] || '';
@@ -177,10 +199,11 @@ function parseSped(fileBufferOrContent) {
                     descr.toUpperCase().includes('CUSTEIO');
 
       if (isFde && valor > 0) {
-        debits.push({
+        fdeDebits.push({
           id: `FDE-${company.competenciaFolder || 'SPED'}`,
           nf: `FDE ${company.competencia || ''}`.trim(),
           tipo: 'FDE',
+          tipoGuia: 'FDE',
           tributo: 'FDE - Fundo de Desenvolvimento Econômico',
           codigoReceita: '643',
           codigoReceitaDesc: config.revenueCodes['643']?.description || 'FUNDO DE DESENVOLVIMENTO ECONÔMICO',
@@ -220,10 +243,11 @@ function parseSped(fileBufferOrContent) {
       const vcto = formatSpedDate(dtVctoRaw) || defaultDueDate;
       const comp = formatSpedCompetence(mesRefRaw) || company.competencia;
 
-      debits.push({
+      stApuracaoDebits.push({
         id: `ST-APURACAO-${company.competenciaFolder || 'SPED'}`,
         nf: `ICMS ST APURAÇÃO ${comp}`.trim(),
         tipo: 'ICMS_ST_APURACAO',
+        tipoGuia: 'ICMS_ST_APURACAO',
         tributo: 'ICMS ST - Saídas Internas por Apuração',
         codigoReceita: codRec || '130',
         codigoReceitaDesc: config.revenueCodes[codRec]?.description || 'ICMS SUBSTITUIÇÃO SAÍDA - OPERAÇÕES INTERNAS',
@@ -247,14 +271,62 @@ function parseSped(fileBufferOrContent) {
       });
     }
 
-    // 3. E116: Obrigações do ICMS recolhido ou a recolher - Operações Próprias
+    // 3. E111 & E113: Ajustes da Apuração e Documentos Fiscais (DIFAL por Operação)
+    if (reg === 'E111') {
+      // |E111|COD_AJ_APUR|DESCR_COMPL_AJ|VL_AJ_APUR|
+      const codAj = (parts[2] || '').trim();
+      const descr = (parts[3] || '').trim();
+      const valRaw = parts[4] || '0';
+      const valor = parseBRL(valRaw);
+
+      const isDifal = codAj.toUpperCase().startsWith('TO05') ||
+                      descr.toUpperCase().includes('DIFAL') ||
+                      descr.toUpperCase().includes('DIFERENCIAL DE AL') ||
+                      descr.toUpperCase().includes('DIF. DE AL');
+
+      currentE111 = {
+        codAj,
+        descr,
+        valor,
+        isDifal
+      };
+    } else if (reg === 'E113' && currentE111 && currentE111.isDifal) {
+      // |E113|COD_PART|COD_MOD|SER|SUB|NUM_DOC|DT_DOC|COD_ITEM|VL_DA|CHV_DOCE|
+      const codPart = (parts[2] || '').trim();
+      const codMod = (parts[3] || '').trim();
+      const ser = (parts[4] || '').trim();
+      const sub = (parts[5] || '').trim();
+      const numDoc = (parts[6] || '').trim();
+      const dtDoc = (parts[7] || '').trim();
+      const codItem = (parts[8] || '').trim();
+      const vlDa = parseBRL(parts[9] || '0');
+      const chvDoce = (parts[10] || '').trim().replace(/\D/g, '');
+
+      const partInfo = participants.get(codPart);
+      const fornecedorNome = partInfo ? partInfo.nome : '';
+      const fornecedorCnpj = partInfo ? partInfo.cnpj : '';
+
+      difalOperacaoRaw.push({
+        nf: numDoc,
+        serie: ser,
+        dtDoc: formatSpedDate(dtDoc),
+        codPart,
+        fornecedor: fornecedorNome,
+        cnpjFornecedor: fornecedorCnpj,
+        valor: vlDa > 0 ? vlDa : currentE111.valor,
+        chaveAcesso: chvDoce,
+        codigoAjuste: currentE111.codAj,
+        descricaoAjuste: currentE111.descr
+      });
+    }
+
+    // 4. E116: Obrigações do ICMS recolhido ou a recolher - Operações Próprias (Normal e DIFAL Apuração)
     if (reg === 'E116') {
       // |E116|COD_OR|VL_OR|DT_VCTO|COD_REC|NUM_PROC|IND_PROC|PROC|TXT_COMPL|MES_REF|
       const codOr = (parts[2] || '').trim();
       const valRaw = parts[3] || '0';
       const dtVctoRaw = (parts[4] || '').trim();
       const rawCodRec = (parts[5] || '').trim();
-      const codRec = (rawCodRec && rawCodRec !== '000' && rawCodRec !== '101') ? rawCodRec : '110';
       const txtCompl = (parts[9] || '').trim();
       const mesRefRaw = (parts[10] || '').trim();
 
@@ -263,34 +335,168 @@ function parseSped(fileBufferOrContent) {
         const vcto = formatSpedDate(dtVctoRaw) || defaultDueDate;
         const comp = formatSpedCompetence(mesRefRaw) || company.competencia;
 
-        debits.push({
-          id: `ICMS-NORMAL-${company.competenciaFolder || 'SPED'}`,
-          nf: `ICMS NORMAL ${comp}`.trim(),
-          tipo: 'ICMS_NORMAL',
-          tributo: 'ICMS - Operações Próprias por Apuração',
-          codigoReceita: codRec,
-          codigoReceitaDesc: config.revenueCodes[codRec]?.description || 'ICMS NORMAL - OPERAÇÕES PRÓPRIAS POR APURAÇÃO',
-          subCodigo: '1', // 'b- - ICMS NORMAL POR APURAÇÃO'
-          subCodigoDesc: 'b- - ICMS NORMAL POR APURAÇÃO',
-          documentType: 'OUTROS A ESPECIFICAR',
-          documentTypeValue: '5',
-          competencia: comp,
-          competenciaFolder: comp.replace('/', '-'),
-          dataVencimento: vcto,
-          valorGuia: valor,
-          valor: valor,
-          valorFormatado: valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-          observation: txtCompl,
-          registroOrigem: 'E116',
-          codigoObrigacao: codOr,
-          razaoSocial: company.razaoSocial,
-          destinatario: company.razaoSocial,
-          cnpj: company.cnpj,
-          ie: company.ie
-        });
+        const isDifal = rawCodRec === '150' || codOr === '003' ||
+                        txtCompl.toUpperCase().includes('DIFAL') ||
+                        txtCompl.toUpperCase().includes('DIFERENCIAL');
+
+        if (isDifal) {
+          difalApuracaoDebits.push({
+            id: `DIFAL-APURACAO-${company.competenciaFolder || 'SPED'}`,
+            nf: `DIFAL APURAÇÃO ${comp}`.trim(),
+            tipo: 'DIFAL_APURACAO',
+            tipoGuia: 'DIFAL',
+            tributo: 'ICMS - Diferencial de Alíquota por Apuração',
+            codigoReceita: '150',
+            codigoReceitaDesc: config.revenueCodes['150']?.description || 'ICMS DIFERENCIAL DE ALÍQUOTA',
+            subCodigo: '1', // 'b - ICMS DIFERENCIAL DE ALIQUOTA POR APURAÇÃO'
+            subCodigoDesc: 'b - ICMS DIFERENCIAL DE ALIQUOTA POR APURAÇÃO',
+            documentType: 'OUTROS A ESPECIFICAR',
+            documentTypeValue: '5',
+            competencia: comp,
+            competenciaFolder: comp.replace('/', '-'),
+            dataVencimento: vcto,
+            valorGuia: valor,
+            valor: valor,
+            valorFormatado: valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            observation: txtCompl || `ICMS DIFERENCIAL DE ALÍQUOTA APURAÇÃO ${comp}`,
+            registroOrigem: 'E116',
+            codigoObrigacao: codOr,
+            razaoSocial: company.razaoSocial,
+            destinatario: company.razaoSocial,
+            cnpj: company.cnpj,
+            ie: company.ie
+          });
+        } else {
+          const codRec = (rawCodRec && rawCodRec !== '000' && rawCodRec !== '101') ? rawCodRec : '110';
+          icmsNormalDebits.push({
+            id: `ICMS-NORMAL-${company.competenciaFolder || 'SPED'}`,
+            nf: `ICMS NORMAL ${comp}`.trim(),
+            tipo: 'ICMS_NORMAL',
+            tipoGuia: 'ICMS_NORMAL',
+            tributo: 'ICMS - Operações Próprias por Apuração',
+            codigoReceita: codRec,
+            codigoReceitaDesc: config.revenueCodes[codRec]?.description || 'ICMS NORMAL - OPERAÇÕES PRÓPRIAS POR APURAÇÃO',
+            subCodigo: '1', // 'b- - ICMS NORMAL POR APURAÇÃO'
+            subCodigoDesc: 'b- - ICMS NORMAL POR APURAÇÃO',
+            documentType: 'OUTROS A ESPECIFICAR',
+            documentTypeValue: '5',
+            competencia: comp,
+            competenciaFolder: comp.replace('/', '-'),
+            dataVencimento: vcto,
+            valorGuia: valor,
+            valor: valor,
+            valorFormatado: valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            observation: txtCompl || `REF ICMS NORMAL A RECOLHER DA COMPETÊNCIA ${comp}`,
+            registroOrigem: 'E116',
+            codigoObrigacao: codOr,
+            razaoSocial: company.razaoSocial,
+            destinatario: company.razaoSocial,
+            cnpj: company.cnpj,
+            ie: company.ie
+          });
+        }
       }
     }
   }
+
+  // Build DIFAL Operação debits from parsed E113 or synthesize from E116 if E113 absent
+  let difalOperacaoDebits = difalOperacaoRaw.map(op => {
+    const obsParts = [];
+    obsParts.push(`ICMS DIFERENCIAL DE ALÍQUOTA REF. COMPRA NA NF ${op.nf}`);
+    if (op.fornecedor) obsParts.push(`FORNECEDOR: ${op.fornecedor}`);
+    if (op.chaveAcesso) obsParts.push(`CHAVE: ${op.chaveAcesso}`);
+    const obsStr = obsParts.join(' - ').substring(0, 400);
+
+    return {
+      id: `DIFAL-NF-${op.nf}-${company.competenciaFolder || 'SPED'}`,
+      nf: op.nf,
+      serie: op.serie,
+      tipo: 'DIFAL_OPERACAO',
+      tipoGuia: 'DIFAL',
+      tributo: 'ICMS - Diferencial de Alíquota por Operação',
+      codigoReceita: '150',
+      codigoReceitaDesc: config.revenueCodes['150']?.description || 'ICMS DIFERENCIAL DE ALÍQUOTA',
+      subCodigo: '2', // 'a - ICMS DIFERENCIAL DE ALIQUOTA POR OPERAÇÃO'
+      subCodigoDesc: 'a - ICMS DIFERENCIAL DE ALIQUOTA POR OPERAÇÃO',
+      documentType: 'OUTROS A ESPECIFICAR',
+      documentTypeValue: '5',
+      competencia: company.competencia,
+      competenciaFolder: company.competenciaFolder,
+      dataVencimento: defaultDueDate,
+      valorGuia: op.valor,
+      valor: op.valor,
+      valorFormatado: op.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      observation: obsStr,
+      chaveAcesso: op.chaveAcesso,
+      fornecedor: op.fornecedor,
+      cnpjFornecedor: op.cnpjFornecedor,
+      registroOrigem: 'E113',
+      codigoAjuste: op.codigoAjuste,
+      razaoSocial: company.razaoSocial,
+      destinatario: company.razaoSocial,
+      cnpj: company.cnpj,
+      ie: company.ie
+    };
+  });
+
+  // Fallback synthesis between Apuração and Operação if one is missing but other exists
+  if (difalOperacaoDebits.length === 0 && difalApuracaoDebits.length > 0) {
+    // If no E113, check if E116 mentions an NF number in its observation
+    const apuracao = difalApuracaoDebits[0];
+    const nfMatch = (apuracao.observation || '').match(/\bNF\s*[:#N°º]*\s*(\d+)/i);
+    const synthNF = nfMatch ? nfMatch[1] : `DIFAL-${company.competenciaFolder || 'OP'}`;
+    difalOperacaoDebits.push({
+      ...apuracao,
+      id: `DIFAL-NF-${synthNF}-${company.competenciaFolder || 'SPED'}`,
+      nf: synthNF,
+      tipo: 'DIFAL_OPERACAO',
+      tributo: 'ICMS - Diferencial de Alíquota por Operação',
+      subCodigo: '2',
+      subCodigoDesc: 'a - ICMS DIFERENCIAL DE ALIQUOTA POR OPERAÇÃO',
+      registroOrigem: 'E116'
+    });
+  } else if (difalApuracaoDebits.length === 0 && difalOperacaoDebits.length > 0) {
+    // Synthesize Apuração total from sum of operations
+    const totalDifalOps = Math.round(difalOperacaoDebits.reduce((acc, d) => acc + d.valorGuia, 0) * 100) / 100;
+    difalApuracaoDebits.push({
+      id: `DIFAL-APURACAO-${company.competenciaFolder || 'SPED'}`,
+      nf: `DIFAL APURAÇÃO ${company.competencia}`.trim(),
+      tipo: 'DIFAL_APURACAO',
+      tipoGuia: 'DIFAL',
+      tributo: 'ICMS - Diferencial de Alíquota por Apuração',
+      codigoReceita: '150',
+      codigoReceitaDesc: config.revenueCodes['150']?.description || 'ICMS DIFERENCIAL DE ALÍQUOTA',
+      subCodigo: '1',
+      subCodigoDesc: 'b - ICMS DIFERENCIAL DE ALIQUOTA POR APURAÇÃO',
+      documentType: 'OUTROS A ESPECIFICAR',
+      documentTypeValue: '5',
+      competencia: company.competencia,
+      competenciaFolder: company.competenciaFolder,
+      dataVencimento: defaultDueDate,
+      valorGuia: totalDifalOps,
+      valor: totalDifalOps,
+      valorFormatado: totalDifalOps.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      observation: `ICMS DIFERENCIAL DE ALÍQUOTA APURAÇÃO ${company.competencia}`,
+      registroOrigem: 'E111',
+      codigoObrigacao: '003',
+      razaoSocial: company.razaoSocial,
+      destinatario: company.razaoSocial,
+      cnpj: company.cnpj,
+      ie: company.ie
+    });
+  }
+
+  // Active DIFAL mode: 'operacao' or 'apuracao' (default: 'apuracao')
+  const requestedDifalMode = (options.difalMode || 'apuracao').toLowerCase();
+  const activeDifalMode = requestedDifalMode === 'operacao' ? 'operacao' : 'apuracao';
+  const activeDifalDebits = activeDifalMode === 'operacao' ? difalOperacaoDebits : difalApuracaoDebits;
+
+  const debits = [
+    ...fdeDebits,
+    ...stApuracaoDebits,
+    ...icmsNormalDebits,
+    ...activeDifalDebits
+  ];
 
   const grandTotal = Math.round(debits.reduce((sum, d) => sum + d.valorGuia, 0) * 100) / 100;
 
@@ -298,6 +504,19 @@ function parseSped(fileBufferOrContent) {
     isSped: true,
     company,
     debits,
+    activeDifalMode,
+    hasDifal: difalApuracaoDebits.length > 0 || difalOperacaoDebits.length > 0,
+    difalDebits: {
+      hasDifal: difalApuracaoDebits.length > 0 || difalOperacaoDebits.length > 0,
+      activeMode: activeDifalMode,
+      apuracao: difalApuracaoDebits,
+      operacao: difalOperacaoDebits,
+      totalApuracao: Math.round(difalApuracaoDebits.reduce((sum, d) => sum + d.valorGuia, 0) * 100) / 100,
+      totalOperacao: Math.round(difalOperacaoDebits.reduce((sum, d) => sum + d.valorGuia, 0) * 100) / 100
+    },
+    fdeDebits,
+    stApuracaoDebits,
+    icmsNormalDebits,
     summary: {
       totalDebits: debits.length,
       grandTotalCalculated: grandTotal,

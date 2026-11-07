@@ -40,6 +40,14 @@ function getStandardPdfName(nf, razaoSocial, revenueCode = '140') {
   } else if (codeStr === '110') {
     prefix = 'DARE ICMS NORMAL';
     cleanNf = cleanNf.replace(/^(ICMS\s*NORMAL)\s*/i, '').trim();
+  } else if (codeStr === '150' || codeStr.toUpperCase().includes('DIFAL')) {
+    if (cleanNf.toUpperCase().includes('APURACAO') || cleanNf.toUpperCase().includes('APURAÇÃO')) {
+      prefix = 'DARE ICMS DIFAL APURACAO';
+      cleanNf = cleanNf.replace(/^(ICMS\s*DIFAL\s*APURA[CÇ][AÃ]O|DIFAL\s*APURA[CÇ][AÃ]O|DIFAL-APURACAO)\s*/i, '').trim();
+    } else {
+      prefix = 'DARE ICMS DIFAL NF';
+      cleanNf = cleanNf.replace(/^(ICMS\s*DIFAL\s*NF|DIFAL\s*NF|DIFAL)\s*/i, '').trim();
+    }
   }
 
   const label = cleanNf ? ` ${cleanNf}` : '';
@@ -181,6 +189,7 @@ function checkInvoiceIdempotency(targetDir, nf, expectedHash, razaoSocial = '', 
       const isFde = codeStr === '643' || codeStr.toUpperCase().includes('FDE');
       const isStApuracao = codeStr === '130';
       const isIcmsNormal = codeStr === '110';
+      const isDifal = codeStr === '150' || codeStr.toUpperCase().includes('DIFAL');
 
       let match = null;
       if (isFde) {
@@ -189,6 +198,17 @@ function checkInvoiceIdempotency(targetDir, nf, expectedHash, razaoSocial = '', 
         match = existingFiles.find(f => f.toUpperCase().includes('DARE ICMS ST APURACAO') && f.endsWith('.pdf'));
       } else if (isIcmsNormal) {
         match = existingFiles.find(f => f.toUpperCase().includes('DARE ICMS NORMAL') && f.endsWith('.pdf'));
+      } else if (isDifal) {
+        const cleanNfStr = String(nf || '').toUpperCase();
+        if (cleanNfStr.includes('APURACAO') || cleanNfStr.includes('APURAÇÃO')) {
+          match = existingFiles.find(f => f.toUpperCase().includes('DARE ICMS DIFAL APURACAO') && f.endsWith('.pdf'));
+        } else {
+          match = existingFiles.find(f => 
+            f.toUpperCase().startsWith(`DARE ICMS DIFAL NF ${nf} - `) ||
+            f.toUpperCase() === `DARE ICMS DIFAL NF ${nf}.PDF` ||
+            (f.toUpperCase().includes('DIFAL') && (f.includes(`NF ${nf} `) || f.includes(`NF_${nf}.`) || f.includes(`NF ${nf}.`)))
+          );
+        }
       } else if (isFecoep) {
         match = existingFiles.find(f => 
           f.startsWith(`DARE FECOEP NF ${nf} - `) ||
@@ -209,7 +229,7 @@ function checkInvoiceIdempotency(targetDir, nf, expectedHash, razaoSocial = '', 
         );
         if (!match) {
           match = existingFiles.find(f => 
-            !f.toUpperCase().includes('FECOEP') && !f.toUpperCase().includes('FDE') && !f.toUpperCase().includes('APURACAO') && !f.toUpperCase().includes('NORMAL') && (f.includes(`NF ${nf} `) || f.includes(`NF_${nf}.`) || f.includes(`NF ${nf}.`))
+            !f.toUpperCase().includes('FECOEP') && !f.toUpperCase().includes('FDE') && !f.toUpperCase().includes('APURACAO') && !f.toUpperCase().includes('NORMAL') && !f.toUpperCase().includes('DIFAL') && (f.includes(`NF ${nf} `) || f.includes(`NF_${nf}.`) || f.includes(`NF ${nf}.`))
           );
         }
       }

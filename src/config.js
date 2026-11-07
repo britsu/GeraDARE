@@ -53,6 +53,15 @@ const config = {
       documentType: 'OUTROS A ESPECIFICAR',
       documentTypeValue: '5',
       pdfPrefix: 'DARE ICMS NORMAL'
+    },
+    '150': {
+      code: '150',
+      name: 'ICMS DIFAL',
+      description: 'ICMS DIFERENCIAL DE ALÍQUOTA',
+      subCode: '1', // '1' = Apuração, '2' = Operação
+      documentType: 'OUTROS A ESPECIFICAR',
+      documentTypeValue: '5',
+      pdfPrefix: 'DARE ICMS DIFAL'
     }
   },
 

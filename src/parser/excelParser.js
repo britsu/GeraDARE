@@ -102,6 +102,108 @@ function parseDecimal(val) {
 }
 
 /**
+ * Extrai dados do contribuinte (I.E., CNPJ, Razão Social) a partir da planilha.
+ * Suporta metadados no topo, aba 'Contribuinte' / 'Metadados', e colunas por item.
+ */
+function extractTaxpayerFromWorkbook(wb, rawRows, headerRowIndex, items) {
+  let ie = '';
+  let cnpj = '';
+  let razaoSocial = '';
+  let uf = 'TO';
+  let codMun = '';
+  let nomeMun = '';
+
+  // 1. Procurar em aba dedicada 'Contribuinte' ou 'Dados do Contribuinte' ou 'Metadados'
+  if (wb && wb.SheetNames) {
+    const contribSheetName = wb.SheetNames.find(n =>
+      /contribuinte|metadado|empresa/i.test(n)
+    );
+    if (contribSheetName && wb.Sheets[contribSheetName]) {
+      const cRows = XLSX.utils.sheet_to_json(wb.Sheets[contribSheetName], { header: 1, defval: '' });
+      for (const row of cRows) {
+        if (!row || row.length === 0) continue;
+        const key = (row[0] || '').toString().toLowerCase().trim();
+        const val = (row[1] || row[2] || '').toString().trim();
+        if (/inscri[cç][aã]o|i\.?e\.?/i.test(key) && !ie && val) {
+          ie = val.replace(/\D/g, '');
+        } else if (/cnpj|cpf/i.test(key) && !cnpj && val) {
+          cnpj = val.replace(/\D/g, '');
+        } else if (/raz[aã]o|nome|contribuinte/i.test(key) && !razaoSocial && val) {
+          razaoSocial = val;
+        } else if (/^uf$/i.test(key) && val) {
+          uf = val.toUpperCase().trim();
+        } else if (/munic[ií]pio|c[oó]d.*mun/i.test(key) && val) {
+          if (/^\d+$/.test(val)) codMun = val;
+          else nomeMun = val;
+        }
+      }
+    }
+  }
+
+  // 2. Procurar em linhas de cabeçalho / metadados pré-tabela (linhas 0 até headerRowIndex)
+  if (rawRows && headerRowIndex >= 0) {
+    for (let r = 0; r <= headerRowIndex; r++) {
+      const row = rawRows[r];
+      if (!row) continue;
+      for (let c = 0; c < row.length; c++) {
+        const text = (row[c] || '').toString().trim();
+        if (!text) continue;
+
+        // IE pattern: IE: 295153407 ou Inscrição Estadual: 29.515.340-7
+        if (!ie) {
+          const ieMatch = text.match(/(?:inscri[cç][aã]o\s*estadual|i\.?e\.?)\s*[:=]?\s*([0-9.\-/]{7,20})/i);
+          if (ieMatch) ie = ieMatch[1].replace(/\D/g, '');
+        }
+        // CNPJ pattern: CNPJ: 43.037.906/0001-93 ou CNPJ: 43037906000193
+        if (!cnpj) {
+          const cnpjMatch = text.match(/(?:cnpj|cpf)\s*[:=]?\s*([0-9.\-/]{11,20})/i);
+          if (cnpjMatch) cnpj = cnpjMatch[1].replace(/\D/g, '');
+        }
+        // Razão Social pattern: Contribuinte: ... ou Razão Social: ...
+        if (!razaoSocial) {
+          const rzMatch = text.match(/(?:contribuinte|raz[aã]o\s*social|empresa)\s*[:=]?\s*([^|\r\n;]+)/i);
+          if (rzMatch) razaoSocial = rzMatch[1].trim();
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: procurar nas colunas dos itens identificados na planilha
+  if (items && items.length > 0) {
+    if (!ie) {
+      const itemWithIE = items.find(i => i.ieDestinatario && i.ieDestinatario.replace(/\D/g, '').length >= 7);
+      if (itemWithIE) ie = itemWithIE.ieDestinatario.replace(/\D/g, '');
+    }
+    if (!cnpj) {
+      const itemWithCnpj = items.find(i => i.cnpjDestinatario && i.cnpjDestinatario.replace(/\D/g, '').length >= 11);
+      if (itemWithCnpj) cnpj = itemWithCnpj.cnpjDestinatario.replace(/\D/g, '');
+    }
+    if (!razaoSocial) {
+      const itemWithClient = items.find(i => i.empresa || i.cliente);
+      if (itemWithClient) razaoSocial = (itemWithClient.empresa || itemWithClient.cliente).trim();
+    }
+  }
+
+  // 4. Fallback em propriedades do workbook (se houver subject ou comment estruturado)
+  if (!ie && wb && wb.Props && wb.Props.Subject) {
+    const subMatch = wb.Props.Subject.match(/IE:(\d+)/i);
+    if (subMatch) ie = subMatch[1];
+    const cnpjMatch = wb.Props.Subject.match(/CNPJ:(\d+)/i);
+    if (cnpjMatch && !cnpj) cnpj = cnpjMatch[1];
+  }
+
+  return {
+    ie: ie || '',
+    inscricaoEstadual: ie || '',
+    cnpj: cnpj || '',
+    razaoSocial: razaoSocial || '',
+    uf: uf || 'TO',
+    codMun: codMun || '',
+    nomeMun: nomeMun || ''
+  };
+}
+
+/**
  * Checks if a row is a summary or total row that must be excluded.
  */
 function isTotalOrAuxiliaryRow(nfValue) {
@@ -301,6 +403,8 @@ function parseExcel(input) {
     parsedItems.push(item);
   }
 
+  const taxpayer = extractTaxpayerFromWorkbook(wb, rawRows, headerRowIndex, parsedItems);
+
   return {
     sheetName: targetSheetName,
     headerRowIndex: headerRowIndex + 1,
@@ -309,6 +413,7 @@ function parseExcel(input) {
     totalGrossFECOEP: Math.round(totalGrossFECOEP * 100) / 100,
     hasFecoepItems: parsedItems.some(it => (it.fecoep || 0) > 0),
     items: parsedItems,
+    taxpayer,
     warnings
   };
 }
@@ -318,6 +423,7 @@ module.exports = {
   normalizeMVA,
   parseDecimal,
   isTotalOrAuxiliaryRow,
+  extractTaxpayerFromWorkbook,
   parseExcel,
   ESSENTIAL_COLUMNS
 };

@@ -9,7 +9,7 @@ const config = require('./config');
 const { parseExcel } = require('./parser/excelParser');
 const { parseSped, generateDebitsSpreadsheet } = require('./parser/spedParser');
 const { groupInvoices, computeIdempotencyHash } = require('./engine/grouper');
-const { analyzeDueDate } = require('./utils/calendar');
+const { analyzeDueDate, getDefaultDueDate } = require('./utils/calendar');
 const SefazClient = require('./portal/sefazClient');
 const batchWorker = require('./worker/batchWorker');
 const { resolveBatchDirectory, sanitizeFileName } = require('./storage/pathManager');
@@ -73,14 +73,15 @@ app.get('/api/status', (req, res) => {
     isRunning: batchWorker.isRunning,
     isPaused: batchWorker.isPaused,
     isCancelled: batchWorker.isCancelled,
-    defaultOutputDir: config.defaultOutputDir
+    defaultOutputDir: config.defaultOutputDir,
+    defaultDueDate: getDefaultDueDate()
   });
 });
 
 // POST /api/analyze-date
 app.post('/api/analyze-date', (req, res) => {
   const { dateStr } = req.body;
-  const analysis = analyzeDueDate(dateStr);
+  const analysis = analyzeDueDate(dateStr || getDefaultDueDate());
   res.json(analysis);
 });
 
@@ -108,7 +109,7 @@ app.post('/api/consult-ie', async (req, res) => {
 // Accepts multipart/form-data with file or defaults to local ICMS ST.xlsx
 app.post('/api/preview', upload.single('file'), async (req, res) => {
   try {
-    const { ie, dueDate, revenueCode: requestedRevenueCode } = req.body;
+    const { ie, dueDate, revenueCode: requestedRevenueCode, difalMode } = req.body;
     let fileBuffer = req.file ? req.file.buffer : null;
     let fileName = req.file ? req.file.originalname : 'ICMS ST.xlsx';
 
@@ -128,7 +129,8 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
                        (fileBuffer && fileBuffer.toString('latin1', 0, 10).startsWith('|0000|'));
 
     if (isSpedFile) {
-      const spedResult = parseSped(fileBuffer);
+      const selectedDifalMode = (difalMode === 'operacao') ? 'operacao' : 'apuracao';
+      const spedResult = parseSped(fileBuffer, { difalMode: selectedDifalMode });
       const excelBuffer = generateDebitsSpreadsheet(spedResult);
       
       const cleanCompany = sanitizeFileName(spedResult.company.razaoSocial);
@@ -187,8 +189,8 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
         } catch {}
       } catch {}
 
-      // Map debits into invoice objects compatible with batch processing and table view
-      const invoices = spedResult.debits.map(debit => ({
+      // Helper to map debit into invoice object compatible with batch processing and table view
+      const mapDebitToInvoice = (debit) => ({
         nf: debit.nf,
         destinatario: clientInfo.razaoSocial,
         empresa: clientInfo.razaoSocial,
@@ -202,12 +204,16 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
           codigo: debit.codigoReceita,
           valor: debit.valorGuia,
           mva: { str: '', num: 0 },
-          aliquota: 0
+          aliquota: 0,
+          chaveAcesso: debit.chaveAcesso || ''
         }],
+        chaveAcesso: debit.chaveAcesso || '',
+        fornecedor: debit.fornecedor || '',
         totalValorContabil: debit.valorGuia,
         totalBaseCalculo: 0,
-        totalIcmsNormal: 0,
-        totalIcmsSt: debit.valorGuia,
+        totalIcmsNormal: debit.codigoReceita === '110' ? debit.valorGuia : 0,
+        totalIcmsSt: debit.codigoReceita === '130' ? debit.valorGuia : 0,
+        totalDifal: debit.codigoReceita === '150' ? debit.valorGuia : 0,
         valorGuia: debit.valorGuia,
         dataVencimento: debit.dataVencimento || dueDateAnalysis.dateStr,
         competencia: debit.competencia || spedResult.company.competencia,
@@ -216,20 +222,29 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
         subCodigo: debit.subCodigo,
         subCodigoDesc: debit.subCodigoDesc,
         documentType: debit.documentType,
-        tipoGuia: debit.tipo,
+        tipoGuia: debit.tipoGuia || (debit.codigoReceita === '150' ? 'DIFAL' : debit.tipo),
+        tipo: debit.tipo,
         observation: debit.observation,
         registroOrigem: debit.registroOrigem,
-        idempotencyHash: computeIdempotencyHash(clientInfo.ie, debit.nf, debit.dataVencimento || dueDateAnalysis.dateStr, debit.valorGuia, debit.codigoReceita),
-        // Required by batchWorker: errors array and isValid flag
+        idempotencyHash: computeIdempotencyHash(clientInfo.ie, debit.nf, debit.dataVencimento || dueDateAnalysis.dateStr, debit.codigoReceita, debit.valorGuia),
         errors: [],
         isValid: true,
         status: 'PENDENTE',
         history: [{
           timestamp: new Date().toISOString(),
           status: 'PENDENTE',
-          message: `Débito fiscal identificado no SPED Fiscal (${debit.registroOrigem} - Cód. ${debit.codigoReceita}).`
+          message: `Débito fiscal identificado no SPED Fiscal (${debit.registroOrigem} - Cód. ${debit.codigoReceita}${debit.subCodigoDesc ? ` - ${debit.subCodigoDesc}` : ''}).`
         }]
-      }));
+      });
+
+      const invoices = spedResult.debits.map(mapDebitToInvoice);
+      const difalApuracaoInvoices = (spedResult.difalDebits?.apuracao || []).map(mapDebitToInvoice);
+      const difalOperacaoInvoices = (spedResult.difalDebits?.operacao || []).map(mapDebitToInvoice);
+      const nonDifalInvoices = [
+        ...spedResult.fdeDebits,
+        ...spedResult.stApuracaoDebits,
+        ...spedResult.icmsNormalDebits
+      ].map(mapDebitToInvoice);
 
       const grandTotal = spedResult.summary.grandTotalCalculated;
 
@@ -249,7 +264,18 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
         hasFecoep: false,
         totalGrossFECOEP: 0,
         totalGrossST: grandTotal,
-        activeRevenueCode: invoices[0]?.codigoReceita || '130',
+        hasDifal: spedResult.hasDifal,
+        activeDifalMode: spedResult.activeDifalMode,
+        difalOptions: {
+          hasDifal: spedResult.hasDifal,
+          activeMode: spedResult.activeDifalMode,
+          totalApuracao: spedResult.difalDebits.totalApuracao,
+          totalOperacao: spedResult.difalDebits.totalOperacao,
+          apuracaoInvoices: difalApuracaoInvoices,
+          operacaoInvoices: difalOperacaoInvoices,
+          nonDifalInvoices
+        },
+        activeRevenueCode: invoices[0]?.codigoReceita || '150',
         distinctDestinatarios: [clientInfo.razaoSocial],
         distinctCompanies: [{
           label: clientInfo.razaoSocial,
@@ -305,7 +331,7 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
     }
 
     // 1. Analyze Date
-    const dueDateAnalysis = analyzeDueDate(dueDate);
+    const dueDateAnalysis = analyzeDueDate(dueDate || getDefaultDueDate());
     if (!dueDateAnalysis.isValid) {
       return res.status(400).json({ error: dueDateAnalysis.error });
     }
@@ -313,15 +339,20 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
     // 2. Parse Excel
     const parsedExcel = parseExcel(fileBuffer);
 
+    // Auto-detect IE from spreadsheet if not explicitly provided in req.body
+    const excelIE = (parsedExcel.taxpayer?.ie || parsedExcel.items.find(i => i.ieDestinatario)?.ieDestinatario || '').replace(/\D/g, '');
+    const cleanReqIE = (ie || '').toString().replace(/\D/g, '');
+    const effectiveIE = cleanReqIE.length > 0 ? cleanReqIE : excelIE;
+
     // 3. Group Invoices for both ICMS ST and FECOEP (if present)
     const activeCode = (requestedRevenueCode === '119' || String(requestedRevenueCode).toUpperCase().includes('FECOEP')) ? '119' : '140';
 
-    const groupedST = groupInvoices(parsedExcel.items, ie || '', dueDateAnalysis.dateStr, '140');
+    const groupedST = groupInvoices(parsedExcel.items, effectiveIE, dueDateAnalysis.dateStr, '140');
     groupedST.sourceFileName = fileName;
 
     let groupedFECOEP = null;
     if (parsedExcel.hasFecoepItems) {
-      groupedFECOEP = groupInvoices(parsedExcel.items, ie || '', dueDateAnalysis.dateStr, '119');
+      groupedFECOEP = groupInvoices(parsedExcel.items, effectiveIE, dueDateAnalysis.dateStr, '119');
       groupedFECOEP.sourceFileName = fileName;
     }
 
@@ -353,18 +384,33 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
       return Array.from(companiesMap.values());
     };
 
-    // 4. Consult IE if provided
+    // 4. Consult IE if provided or auto-detected from spreadsheet
     let clientInfo = null;
     let ieError = null;
-    if (ie && ie.trim().length > 0) {
+    if (effectiveIE && effectiveIE.length > 0) {
       const sefaz = new SefazClient({ headless: true });
       try {
-        clientInfo = await sefaz.consultIE(ie);
+        clientInfo = await sefaz.consultIE(effectiveIE);
       } catch (err) {
         ieError = err.message;
       } finally {
         await sefaz.close();
       }
+    }
+
+    // Fallback if SEFAZ was offline or not reached, but we have taxpayer info from spreadsheet:
+    if (!clientInfo && (effectiveIE || parsedExcel.taxpayer?.cnpj || parsedExcel.taxpayer?.razaoSocial)) {
+      const foundRazao = parsedExcel.taxpayer?.razaoSocial || parsedExcel.items[0]?.cliente || 'CONTRIBUINTE';
+      const foundCnpj = parsedExcel.taxpayer?.cnpj || parsedExcel.items[0]?.cnpjDestinatario || '';
+      clientInfo = {
+        ie: effectiveIE || parsedExcel.taxpayer?.ie || '',
+        inscricaoEstadual: effectiveIE || parsedExcel.taxpayer?.ie || '',
+        razaoSocial: foundRazao,
+        cnpj: foundCnpj,
+        uf: parsedExcel.taxpayer?.uf || 'TO',
+        codMunOrigem: parsedExcel.taxpayer?.codMun || '1702109',
+        nomeMunOrigem: parsedExcel.taxpayer?.nomeMun || 'ARAGUAÍNA'
+      };
     }
 
     const distinctDestinatarios = Array.from(new Set(activeGrouped.invoices.map(i => i.destinatario).filter(Boolean)));
@@ -395,6 +441,7 @@ app.post('/api/preview', upload.single('file'), async (req, res) => {
       sourceFileName: fileName,
       dueDateAnalysis,
       clientInfo,
+      taxpayer: parsedExcel.taxpayer,
       ieError,
       hasFecoep: parsedExcel.hasFecoepItems,
       totalGrossFECOEP: parsedExcel.totalGrossFECOEP || 0,
@@ -541,13 +588,23 @@ app.get('/api/pdf/:nf', (req, res) => {
   try {
     const files = fs.readdirSync(targetDir);
     const requestedCode = req.query.revenueCode || req.query.code;
+    const isDifal = requestedCode === '150' || (req.query.tipo && req.query.tipo.toUpperCase().includes('DIFAL')) || String(nf).toUpperCase().includes('DIFAL');
     const isFecoep = requestedCode === '119' || (req.query.tipo && req.query.tipo.toUpperCase().includes('FECOEP'));
     const isFde = requestedCode === '643' || (req.query.tipo && req.query.tipo.toUpperCase().includes('FDE')) || String(nf).toUpperCase().includes('FDE');
     const isStApuracao = requestedCode === '130' || String(nf).toUpperCase().includes('APURAÇÃO') || String(nf).toUpperCase().includes('APURACAO');
     const isIcmsNormal = requestedCode === '110' || String(nf).toUpperCase().includes('NORMAL');
 
     let match = null;
-    if (isFde) {
+    if (isDifal) {
+      match = files.find(f => {
+        const up = f.toUpperCase();
+        if (!up.endsWith('.pdf') || !up.includes('DIFAL')) return false;
+        if (String(nf).toUpperCase().includes('APUR')) {
+          return up.includes('APURACAO') || up.includes('APURAÇÃO');
+        }
+        return up.includes(`NF ${nf} `) || up.includes(`NF_${nf}.`) || up.includes(`NF ${nf}.`) || up.includes(String(nf));
+      });
+    } else if (isFde) {
       match = files.find(f => f.toUpperCase().startsWith('DARE FDE') && f.endsWith('.pdf'));
     } else if (isStApuracao) {
       match = files.find(f => f.toUpperCase().includes('DARE ICMS ST APURACAO') && f.endsWith('.pdf'));
@@ -573,11 +630,12 @@ app.get('/api/pdf/:nf', (req, res) => {
       );
       if (!match) {
         match = files.find(f => 
-          !f.toUpperCase().includes('FECOEP') && !f.toUpperCase().includes('FDE') && !f.toUpperCase().includes('APURACAO') && !f.toUpperCase().includes('NORMAL') && (f.includes(`NF ${nf} `) || f.includes(`NF_${nf}.`) || f.includes(`NF ${nf}.`))
+          !f.toUpperCase().includes('FECOEP') && !f.toUpperCase().includes('FDE') && !f.toUpperCase().includes('APURACAO') && !f.toUpperCase().includes('NORMAL') && !f.toUpperCase().includes('DIFAL') && (f.includes(`NF ${nf} `) || f.includes(`NF_${nf}.`) || f.includes(`NF ${nf}.`))
         );
       }
     } else {
       match = files.find(f => 
+        (f.toUpperCase().includes('DARE ICMS DIFAL') && f.endsWith('.pdf')) ||
         f.startsWith(`DARE FECOEP NF ${nf} - `) ||
         f === `DARE FECOEP NF ${nf}.pdf` ||
         f.startsWith(`DARE ICMS FECOEP NF ${nf} - `) ||

@@ -35,13 +35,31 @@ class AuditManager {
       } catch {}
     }
 
+    const resolveTipoGuia = (inv) => {
+      const code = String(inv.codigoReceita || this.codigoReceita || '140');
+      if (inv.tipoGuia) return inv.tipoGuia;
+      if (inv.tipo) {
+        if (inv.tipo.startsWith('DIFAL')) return 'DIFAL';
+        if (inv.tipo === 'ICMS_NORMAL') return 'ICMS_NORMAL';
+        if (inv.tipo === 'ICMS_ST_APURACAO') return 'ICMS_ST_APURACAO';
+        if (inv.tipo === 'FDE') return 'FDE';
+        return inv.tipo;
+      }
+      if (code === '119') return 'FECOEP';
+      if (code === '150') return 'DIFAL';
+      if (code === '110') return 'ICMS_NORMAL';
+      if (code === '130') return 'ICMS_ST_APURACAO';
+      if (code === '643') return 'FDE';
+      return 'ICMS_ST';
+    };
+
     const currentMapped = invoices.map(inv => ({
       nf: inv.nf,
       itemCount: inv.itemCount,
       valor_guia_calculado: inv.valorGuia,
       valor_bruto_itens: inv.rawSum,
       codigo_receita: inv.codigoReceita || this.codigoReceita,
-      tipo_guia: (String(inv.codigoReceita) === '119' || inv.tipoGuia === 'FECOEP') ? 'FECOEP' : 'ICMS_ST',
+      tipo_guia: resolveTipoGuia(inv),
       data_vencimento: inv.dataVencimento || this.dueDate,
       idempotency_hash: inv.idempotencyHash,
       status: inv.status,
@@ -73,6 +91,7 @@ class AuditManager {
     const totalGuias = Math.round(allMergedNotas.reduce((acc, n) => acc + (n.valor_guia_calculado || 0), 0) * 100) / 100;
     const totalST = Math.round(allMergedNotas.filter(n => String(n.codigo_receita) === '140' || n.tipo_guia === 'ICMS_ST').reduce((acc, n) => acc + (n.valor_guia_calculado || 0), 0) * 100) / 100;
     const totalFecoep = Math.round(allMergedNotas.filter(n => String(n.codigo_receita) === '119' || n.tipo_guia === 'FECOEP').reduce((acc, n) => acc + (n.valor_guia_calculado || 0), 0) * 100) / 100;
+    const totalDifal = Math.round(allMergedNotas.filter(n => String(n.codigo_receita) === '150' || n.tipo_guia === 'DIFAL').reduce((acc, n) => acc + (n.valor_guia_calculado || 0), 0) * 100) / 100;
 
     const auditData = {
       versao_aplicativo: config.version,
@@ -90,6 +109,7 @@ class AuditManager {
         valor_total_guias: totalGuias,
         valor_total_icms_st: totalST,
         valor_total_fecoep: totalFecoep,
+        valor_total_difal: totalDifal,
         notas_sucesso: allMergedNotas.filter(n => n.status === 'SUCESSO' || n.status === 'BAIXADA').length,
         notas_validadas_pdf: allMergedNotas.filter(n => n.validacao_pdf && n.validacao_pdf.valid).length,
         notas_erro: allMergedNotas.filter(n => n.status.startsWith('ERRO')).length,
@@ -123,7 +143,7 @@ class AuditManager {
       notesToExport = invoices.map(inv => ({
         nf: inv.nf,
         destinatario: inv.destinatario,
-        tipo_guia: (String(inv.codigoReceita) === '119' || inv.tipoGuia === 'FECOEP') ? 'FECOEP' : 'ICMS_ST',
+        tipo_guia: inv.tipoGuia || (String(inv.codigoReceita) === '150' ? 'DIFAL' : ((String(inv.codigoReceita) === '119') ? 'FECOEP' : 'ICMS_ST')),
         itemCount: inv.itemCount,
         valor_guia_calculado: inv.valorGuia,
         valor_bruto_itens: inv.rawSum,

@@ -106,7 +106,8 @@ function isWeekend(year, month, day) {
  * Analyzes due date and returns check details, alert, and suggested next business day.
  */
 function analyzeDueDate(dateStr) {
-  const parsed = parseBrazilianDate(dateStr);
+  const targetDateStr = (dateStr && typeof dateStr === 'string' && dateStr.trim()) ? dateStr.trim() : getDefaultDueDate();
+  const parsed = parseBrazilianDate(targetDateStr);
   if (!parsed) {
     return {
       isValid: false,
@@ -185,11 +186,23 @@ function calculateCompetence(dueDateStr) {
   return `${String(month).padStart(2, '0')}/${year}`;
 }
 
+/**
+ * Calculates the default due date based on the current computer date.
+ * Default due day is day 09 of the current month and year (e.g., 09/10/2026 for October 2026).
+ */
+function getDefaultDueDate(refDate = new Date()) {
+  const day = '09';
+  const month = String(refDate.getMonth() + 1).padStart(2, '0');
+  const year = refDate.getFullYear();
+  return `${day}/${month}/${year}`;
+}
+
 module.exports = {
   parseBrazilianDate,
   formatBrazilianDate,
   analyzeDueDate,
   calculateCompetence,
+  getDefaultDueDate,
   isHoliday,
   isWeekend
 };

@@ -85,15 +85,22 @@
             2. Data de Vencimento <span class="text-rose-500">*</span>
           </label>
           <div class="relative">
-            <input type="text" id="inputDueDate" value="09/09/2026" placeholder="DD/MM/AAAA" maxlength="10"
+            <input type="text" id="inputDueDate" value="" placeholder="DD/MM/AAAA" maxlength="10"
                    class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-800 font-medium pl-10 text-sm">
             <i class="fa-regular fa-calendar absolute left-3.5 top-3 text-slate-400"></i>
+            <script>
+              try {
+                var _now = new Date();
+                var _defDate = '09/' + String(_now.getMonth() + 1).padStart(2, '0') + '/' + _now.getFullYear();
+                document.getElementById('inputDueDate').value = _defDate;
+              } catch (e) {}
+            </script>
           </div>
 
           <!-- Competence Display Pill -->
           <div class="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-900 text-xs font-semibold">
             <i class="fa-solid fa-tag text-indigo-500"></i>
-            <span>Competência: <strong id="displayCompetencia" class="text-indigo-700">08/2026</strong> <span class="text-slate-500 font-normal">(1 mês antes do vencimento)</span></span>
+            <span>Competência: <strong id="displayCompetencia" class="text-indigo-700">-</strong> <span class="text-slate-500 font-normal">(1 mês antes do vencimento)</span></span>
           </div>
 
           <!-- Calendar Alert Banner -->
@@ -315,27 +322,47 @@
       </div>
 
       <!-- SPED Detected Banner with Direct Download Button -->
-      <div id="spedBannerContainer" class="hidden p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-xs">
-        <div class="flex items-center space-x-3">
-          <div class="w-10 h-10 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xl shrink-0">
-            <i class="fa-solid fa-file-invoice"></i>
-          </div>
-          <div>
-            <div class="flex items-center space-x-2">
-              <span class="text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-200 text-emerald-900 uppercase tracking-wider">Origem: SPED Fiscal EFD ICMS/IPI</span>
-              <span id="spedCompanyLabel" class="text-xs font-bold text-emerald-950"></span>
+      <div id="spedBannerContainer" class="hidden p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-col gap-3 shadow-xs">
+        <div class="flex flex-col md:flex-row items-center justify-between gap-3">
+          <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xl shrink-0">
+              <i class="fa-solid fa-file-invoice"></i>
             </div>
-            <p class="text-xs text-emerald-800 mt-0.5">
-              Débitos apurados identificados automaticamente: <strong>FDE (Cód. 643)</strong> e <strong>ICMS ST Saídas (Cód. 130 / Sub b)</strong>.
-            </p>
+            <div>
+              <div class="flex items-center space-x-2">
+                <span class="text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-200 text-emerald-900 uppercase tracking-wider">Origem: SPED Fiscal EFD ICMS/IPI</span>
+                <span id="spedCompanyLabel" class="text-xs font-bold text-emerald-950"></span>
+              </div>
+              <p class="text-xs text-emerald-800 mt-0.5">
+                Débitos fiscais identificados: <strong>ICMS Normal (Cód. 110)</strong>, <strong>DIFAL (Cód. 150)</strong>, <strong>ICMS ST (Cód. 130)</strong> e <strong>FDE (Cód. 643)</strong>.
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center space-x-2 shrink-0">
+            <a id="btnDownloadSpedXlsx" href="/api/sped/download-xlsx" download="Debitos_SPED.xlsx"
+               class="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center space-x-2 cursor-pointer">
+              <i class="fa-solid fa-file-excel text-emerald-200 text-base"></i>
+              <span>Baixar Planilha Gerada (.xlsx)</span>
+            </a>
           </div>
         </div>
-        <div class="flex items-center space-x-2 shrink-0">
-          <a id="btnDownloadSpedXlsx" href="/api/sped/download-xlsx" download="Debitos_SPED.xlsx"
-             class="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center space-x-2 cursor-pointer">
-            <i class="fa-solid fa-file-excel text-emerald-200 text-base"></i>
-            <span>Baixar Planilha Gerada (.xlsx)</span>
-          </a>
+
+        <!-- DIFAL Mode Selection Pill Group -->
+        <div id="spedDifalOptionsContainer" class="hidden pt-3 border-t border-emerald-200/80 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div class="flex items-center space-x-2">
+            <span class="text-xs font-bold text-emerald-950 uppercase tracking-wider flex items-center">
+              <i class="fa-solid fa-scale-balanced text-emerald-700 mr-1.5"></i>Modalidade DIFAL (Cód. 150):
+            </span>
+            <span class="text-[11px] text-emerald-800 font-medium" id="spedDifalTotalsText"></span>
+          </div>
+          <div class="inline-flex p-1 bg-emerald-100/90 rounded-xl border border-emerald-300">
+            <button type="button" id="btnDifalApuracao" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm bg-white text-emerald-900 border border-emerald-300 cursor-pointer flex items-center">
+              <i class="fa-solid fa-calculator text-emerald-600 mr-1.5"></i>Por Apuração (Subcód. 1 / Letra b)
+            </button>
+            <button type="button" id="btnDifalOperacao" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-800 hover:text-emerald-950 transition-all cursor-pointer flex items-center">
+              <i class="fa-solid fa-receipt text-emerald-700 mr-1.5"></i>Por Operação (Subcód. 2 / Letra a - E113)
+            </button>
+          </div>
         </div>
       </div>
 
@@ -485,9 +512,9 @@
             <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-2 text-slate-400 text-xs"></i>
           </div>
           <div class="text-xs text-slate-500 flex items-center space-x-2">
-            <span>Competência: <strong id="tableDisplayCompetencia" class="text-indigo-700">08/2026</strong></span>
+            <span>Competência: <strong id="tableDisplayCompetencia" class="text-indigo-700">-</strong></span>
             <span>&bull;</span>
-            <span>Vencimento: <strong id="tableDisplayVencimento" class="text-slate-800">09/09/2026</strong></span>
+            <span>Vencimento: <strong id="tableDisplayVencimento" class="text-slate-800">-</strong></span>
           </div>
         </div>
       </div>
@@ -802,10 +829,22 @@
       }
     }
 
+    // Default due date: Day 09 of the current month and year of the computer
+    function getDefaultDueDate() {
+      const now = new Date();
+      const dd = '09';
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const yyyy = now.getFullYear();
+      return `${dd}/${mm}/${yyyy}`;
+    }
+
     // Date analysis and competence update
     async function checkDate() {
-      const dateVal = inputDueDate.value.trim();
-      if (!dateVal) return;
+      let dateVal = (inputDueDate ? inputDueDate.value.trim() : '');
+      if (!dateVal) {
+        dateVal = getDefaultDueDate();
+        if (inputDueDate) inputDueDate.value = dateVal;
+      }
       try {
         const res = await fetch('/api/analyze-date', {
           method: 'POST',
@@ -848,6 +887,9 @@
     }
     inputDueDate.addEventListener('blur', checkDate);
     inputDueDate.addEventListener('input', checkDate);
+    if (!inputDueDate.value.trim() || inputDueDate.value.trim() === '09/09/2026') {
+      inputDueDate.value = getDefaultDueDate();
+    }
     checkDate();
 
     // Consult IE button
@@ -941,8 +983,12 @@
           state.clientInfo = data.clientInfo;
           const isFilial = data.clientInfo.cnpj && !data.clientInfo.cnpj.includes('/0001');
           const tipoEmpresa = isFilial ? 'FILIAL' : 'MATRIZ';
-          const infoText = `${data.clientInfo.razaoSocial} (${tipoEmpresa}) &bull; CNPJ: ${data.clientInfo.cnpj || '-'} &bull; ${data.clientInfo.nomeMunOrigem}`;
+          const infoText = `${data.clientInfo.razaoSocial} (${tipoEmpresa}) &bull; CNPJ: ${data.clientInfo.cnpj || '-'} &bull; ${data.clientInfo.nomeMunOrigem || data.clientInfo.nomeMun || 'TO'}`;
           displayTaxpayerInfo.innerHTML = `<span class="text-emerald-700 font-bold"><i class="fa-solid fa-building-circle-check mr-1 text-emerald-600"></i> ${infoText}</span>`;
+          if (data.clientInfo.ie) {
+            inputIE.value = data.clientInfo.inscricaoEstadual || data.clientInfo.ie;
+            appendLog(`Contribuinte reconhecido automaticamente na planilha: ${data.clientInfo.razaoSocial} (IE: ${data.clientInfo.inscricaoEstadual || data.clientInfo.ie})`, 'info');
+          }
         } else if (!ie) {
           displayTaxpayerInfo.innerHTML = `<span class="text-amber-700 font-semibold"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Planilha lida. Digite a Inscrição Estadual acima para o lote.</span>`;
         }
@@ -1057,10 +1103,72 @@
         if (data.dueDateAnalysis && data.dueDateAnalysis.dateStr) {
           inputDueDate.value = data.dueDateAnalysis.dateStr;
         }
-        const firstCode = String(data.activeRevenueCode || (data.invoices && data.invoices[0] && data.invoices[0].codigoReceita) || '110');
+
+        // Handle DIFAL Apuração vs Operação toggle if DIFAL is present in SPED
+        const spedDifalContainer = document.getElementById('spedDifalOptionsContainer');
+        const spedDifalTotals = document.getElementById('spedDifalTotalsText');
+        const btnDifalApuracao = document.getElementById('btnDifalApuracao');
+        const btnDifalOperacao = document.getElementById('btnDifalOperacao');
+
+        if (data.hasDifal && data.difalOptions) {
+          if (spedDifalContainer) spedDifalContainer.classList.remove('hidden');
+          if (spedDifalTotals) {
+            spedDifalTotals.innerText = `Apuração: R$ ${data.difalOptions.totalApuracao.toFixed(2).replace('.', ',')} (${data.difalOptions.apuracaoInvoices.length} guia) | Operação: R$ ${data.difalOptions.totalOperacao.toFixed(2).replace('.', ',')} (${data.difalOptions.operacaoInvoices.length} guia${data.difalOptions.operacaoInvoices.length > 1 ? 's' : ''})`;
+          }
+
+          const setDifalMode = (mode) => {
+            state.difalMode = mode;
+            state.currentModality = '150';
+            if (mode === 'operacao') {
+              if (btnDifalOperacao) btnDifalOperacao.className = 'px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm bg-white text-emerald-900 border border-emerald-300 cursor-pointer flex items-center';
+              if (btnDifalApuracao) btnDifalApuracao.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-800 hover:text-emerald-950 transition-all cursor-pointer flex items-center';
+              state.previewData.invoices = [
+                ...(data.difalOptions.nonDifalInvoices || []),
+                ...(data.difalOptions.operacaoInvoices || [])
+              ];
+            } else {
+              if (btnDifalApuracao) btnDifalApuracao.className = 'px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm bg-white text-emerald-900 border border-emerald-300 cursor-pointer flex items-center';
+              if (btnDifalOperacao) btnDifalOperacao.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-800 hover:text-emerald-950 transition-all cursor-pointer flex items-center';
+              state.previewData.invoices = [
+                ...(data.difalOptions.nonDifalInvoices || []),
+                ...(data.difalOptions.apuracaoInvoices || [])
+              ];
+            }
+
+            const totalSum = state.previewData.invoices.reduce((acc, i) => acc + (i.valorGuia || 0), 0);
+            data.summary.totalInvoices = state.previewData.invoices.length;
+            data.summary.totalItems = state.previewData.invoices.length;
+            data.summary.grandTotalCalculated = totalSum;
+
+            document.getElementById('metricTotalNFs').innerText = state.previewData.invoices.length;
+            document.getElementById('metricTotalItems').innerText = state.previewData.invoices.length;
+            document.getElementById('metricTotalST').innerText = `R$ ${totalSum.toFixed(2).replace('.', ',')}`;
+
+            renderTable(state.previewData.invoices);
+            updateSelectionMetrics();
+
+            if (stepCard2Title) stepCard2Title.innerText = `Preencher 150`;
+            if (stepCard2Sub) stepCard2Sub.innerText = mode === 'operacao' ? 'Sub 2 (Operação)' : 'Sub 1 (Apuração)';
+
+            appendLog(`Modalidade DIFAL definida para: ${mode === 'operacao' ? 'Por Operação (Subcódigo 2 / Guias por NF)' : 'Por Apuração (Subcódigo 1 / Guia Consolidada)'}.`);
+          };
+
+          if (btnDifalApuracao) btnDifalApuracao.onclick = () => setDifalMode('apuracao');
+          if (btnDifalOperacao) btnDifalOperacao.onclick = () => setDifalMode('operacao');
+
+          // Initialize with requested or active mode
+          const initMode = state.difalMode || data.activeDifalMode || 'apuracao';
+          setDifalMode(initMode);
+        } else {
+          if (spedDifalContainer) spedDifalContainer.classList.add('hidden');
+        }
+
+        const firstCode = String(data.activeRevenueCode || (data.invoices && data.invoices[0] && data.invoices[0].codigoReceita) || '150');
+        state.currentModality = firstCode;
         if (stepCard2Title) stepCard2Title.innerText = `Preencher ${firstCode}`;
         if (stepCard2Sub) {
-          if (firstCode === '110' || firstCode === '130') stepCard2Sub.innerText = 'Sub 1 (Apuração)';
+          if (firstCode === '150') stepCard2Sub.innerText = state.difalMode === 'operacao' ? 'Sub 2 (Operação)' : 'Sub 1 (Apuração)';
+          else if (firstCode === '110' || firstCode === '130') stepCard2Sub.innerText = 'Sub 1 (Apuração)';
           else if (firstCode === '643') stepCard2Sub.innerText = 'FDE Sem Subcódigo';
         }
       } else {
@@ -1168,12 +1276,27 @@
           : chaveAcesso;
 
         if (inv.registroOrigem) {
-          shortChave = `<span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-200 font-bold text-[11px]">[${inv.registroOrigem}] Cód. ${inv.codigoReceita}</span>`;
+          if (shortChave && shortChave !== '-') {
+            shortChave = `<span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-200 font-bold text-[10px] mr-1">[${inv.registroOrigem}]</span><span class="bg-slate-100 px-1 py-0.5 rounded border border-slate-200">${shortChave}</span>`;
+          } else {
+            shortChave = `<span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-200 font-bold text-[11px]">[${inv.registroOrigem}] Cód. ${inv.codigoReceita}</span>`;
+          }
         } else if (shortChave !== '-') {
           shortChave = `<span class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${shortChave}</span>`;
         }
 
         const destinatario = inv.destinatario || '-';
+
+        let nfDisplay = inv.nf;
+        if (inv.codigoReceita === '150') {
+          const isOp = inv.subCodigo === '2' || inv.tipo === 'DIFAL_OPERACAO';
+          const difalTag = isOp
+            ? '<span class="ml-1.5 inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">DIFAL Op.</span>'
+            : '<span class="ml-1.5 inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200">DIFAL Apur.</span>';
+          nfDisplay = `${inv.nf} ${difalTag}`;
+        } else if (inv.codigoReceita === '110') {
+          nfDisplay = `${inv.nf} <span class="ml-1.5 inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 border border-indigo-200">ICMS Normal</span>`;
+        }
 
         // Check PDF validation status
         let valHtml = `<span id="val-status-${inv.nf}" class="text-xs text-slate-400">Pendente</span>`;
@@ -1204,7 +1327,7 @@
           <td class="py-3 px-2 text-center">
             <input type="checkbox" class="inv-checkbox" data-index="${index}" data-nf="${inv.nf.replace(/"/g, '&quot;')}" checked>
           </td>
-          <td class="py-3 px-3 font-bold text-slate-800">${inv.nf}</td>
+          <td class="py-3 px-3 font-bold text-slate-800">${nfDisplay}</td>
           <td class="py-3 px-3 text-xs font-semibold text-slate-600 max-w-[140px] truncate" title="${destinatario}">${destinatario}</td>
           <td class="py-3 px-3 font-mono text-xs text-slate-600" title="${chaveAcesso}">
             <span class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${shortChave}</span>
@@ -1350,9 +1473,11 @@
       if (displayTaxpayerInfo) displayTaxpayerInfo.innerHTML = '<span class="text-slate-400 italic">Preencha a IE ou carregue a planilha para identificar</span>';
       if (inputCustomPath) inputCustomPath.value = '';
 
-      // 4. Reset Date Alerts & Suggestions
+      // 4. Reset Date Alerts & Suggestions and restore current computer month due date
+      if (inputDueDate) inputDueDate.value = getDefaultDueDate();
       if (dateAlertBox) dateAlertBox.classList.add('hidden');
       if (dateSuggestionValue) dateSuggestionValue.innerText = '';
+      checkDate();
 
       // 5. Reset Modality Switcher to default 140
       switchModality('140');
@@ -1476,9 +1601,28 @@
       }
 
       const customPath = inputCustomPath.value.trim();
-      const isFecoep = state.currentModality === '119';
-      const docTypeTitle = isFecoep ? 'FECOEP (Cód. 119)' : 'ICMS ST (Cód. 140)';
-      const pdfTitlePattern = isFecoep ? `DARE FECOEP NF [NUMERO] - ${client.razaoSocial}.pdf` : `DARE ICMS ST NF [NUMERO] - ${client.razaoSocial}.pdf`;
+      const firstSelectedInvoice = selectedIndices.length > 0 ? state.previewData.invoices[selectedIndices[0]] : null;
+      const effectiveRevenueCode = firstSelectedInvoice?.codigoReceita || state.previewData.activeRevenueCode || state.currentModality || '140';
+
+      let docTypeTitle = 'ICMS ST (Cód. 140)';
+      let pdfTitlePattern = `DARE ICMS ST NF [NUMERO] - ${client.razaoSocial}.pdf`;
+      if (effectiveRevenueCode === '150') {
+        const isOp = state.difalMode === 'operacao' || firstSelectedInvoice?.tipo === 'DIFAL_OPERACAO' || firstSelectedInvoice?.subCodigo === '2';
+        docTypeTitle = isOp ? 'DIFAL por Operação (Cód. 150 / Subcód. 2)' : 'DIFAL por Apuração (Cód. 150 / Subcód. 1)';
+        pdfTitlePattern = isOp ? `DARE ICMS DIFAL NF [NUMERO] - ${client.razaoSocial}.pdf` : `DARE ICMS DIFAL APURACAO [COMPETENCIA] - ${client.razaoSocial}.pdf`;
+      } else if (effectiveRevenueCode === '119') {
+        docTypeTitle = 'FECOEP (Cód. 119)';
+        pdfTitlePattern = `DARE FECOEP NF [NUMERO] - ${client.razaoSocial}.pdf`;
+      } else if (effectiveRevenueCode === '110') {
+        docTypeTitle = 'ICMS Normal (Cód. 110)';
+        pdfTitlePattern = `DARE ICMS NORMAL APURACAO [COMPETENCIA] - ${client.razaoSocial}.pdf`;
+      } else if (effectiveRevenueCode === '130') {
+        docTypeTitle = 'ICMS ST Apuração (Cód. 130)';
+        pdfTitlePattern = `DARE ICMS ST APURACAO [COMPETENCIA] - ${client.razaoSocial}.pdf`;
+      } else if (effectiveRevenueCode === '643') {
+        docTypeTitle = 'FDE (Cód. 643)';
+        pdfTitlePattern = `DARE FDE APURACAO [COMPETENCIA] - ${client.razaoSocial}.pdf`;
+      }
 
       if (mode === 'emitir-lote-aprovado') {
         const confirmReal = confirm(`CONFIRMAÇÃO DE EMISSÃO OFICIAL (${docTypeTitle}):\n\nEmpresa: ${client.razaoSocial} (IE: ${client.inscricaoEstadual})\nNotas selecionadas: ${selectedNFs.length} nota(s)\nPasta de destino: ${customPath || 'Calculada automaticamente'}\n\nDeseja emitir os DARES oficiais com títulos "${pdfTitlePattern}" e validação pós-geração?`);
@@ -1501,8 +1645,8 @@
               sourceFileName: state.previewData.sourceFileName,
               totalInvoices: state.previewData.summary.totalInvoices,
               invoices: state.previewData.invoices,
-              codigoReceita: state.currentModality,
-              revenueCode: state.currentModality
+              codigoReceita: effectiveRevenueCode,
+              revenueCode: effectiveRevenueCode
             },
             dueDateInfo: state.previewData.dueDateAnalysis,
             mode,

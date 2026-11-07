@@ -78,9 +78,17 @@ function parseDarePdf(pdfPath) {
   const totalValue = values.length > 0 ? values[values.length - 1].num : null;
   const allValues = values.map(v => v.num);
 
-  // Chave de acesso
-  const chaveMatch = chunks.find(c => c.includes('CHAVE DE ACESSO DA NFE:'));
-  const chaveAcesso = chaveMatch ? chaveMatch.replace('CHAVE DE ACESSO DA NFE:', '').trim() : '';
+  // Chave de acesso (searches standard SEFAZ header or observation line)
+  const chaveMatch = chunks.find(c => c.toUpperCase().includes('CHAVE DE ACESSO DA NFE:') || c.toUpperCase().includes('CHAVE NFE:') || /\b\d{44}\b/.test(c));
+  let chaveAcesso = '';
+  if (chaveMatch) {
+    const digitsOnly = chaveMatch.match(/\b\d{44}\b/);
+    if (digitsOnly) {
+      chaveAcesso = digitsOnly[0];
+    } else {
+      chaveAcesso = chaveMatch.replace(/CHAVE.*?:/i, '').replace(/\D/g, '').trim();
+    }
+  }
 
   // Razão Social (occurs in the taxpayer section, often right before the IE or in chunks)
   let razaoSocial = null;
@@ -96,11 +104,16 @@ function parseDarePdf(pdfPath) {
     c.includes('DARE ICMS ST') || 
     c.includes('DARE ICMS FECOEP') ||
     c.includes('DARE FECOEP') ||
+    c.includes('DARE ICMS DIFAL') ||
+    c.includes('DIFERENCIAL') ||
+    c.includes('DIFAL') ||
     c.includes('FECOEP') ||
     c.includes('REF. COMPRA') ||
     c.includes('(MVA ') || 
     c.includes('NA NF ') ||
-    c.includes('REF COMPRA DE')
+    c.includes('REF COMPRA DE') ||
+    c.includes('Chave NFe') ||
+    c.includes('E OUTROS')
   );
   const uniqueObsChunks = Array.from(new Set(obsChunks.map(c => c.trim()).filter(Boolean)));
   let observation = uniqueObsChunks.join(' ').replace(/\s+/g, ' ').trim();
@@ -183,7 +196,9 @@ function validateDareAgainstInvoice(pdfPath, invoice, clientInfo) {
   // 3. Informações Complementares validation
   const rawChunksText = parsed.allChunks.join(' ');
   const codeStr = String(invoice.codigoReceita || '');
-  const isSpedDebt = codeStr === '643' || codeStr === '130' || codeStr === '110' || invoice.tipo === 'FDE' || invoice.tipo === 'ICMS_ST_APURACAO' || invoice.tipo === 'ICMS_NORMAL';
+  const isDifal = codeStr === '150' || invoice.tipo === 'DIFAL' || invoice.tipo === 'DIFAL_APURACAO' || invoice.tipo === 'DIFAL_OPERACAO';
+  const isSpedDebt = codeStr === '643' || codeStr === '130' || codeStr === '110' || isDifal ||
+                     invoice.tipo === 'FDE' || invoice.tipo === 'ICMS_ST_APURACAO' || invoice.tipo === 'ICMS_NORMAL';
 
   if (isSpedDebt) {
     const isFde = codeStr === '643' || invoice.tipo === 'FDE';
@@ -203,6 +218,11 @@ function validateDareAgainstInvoice(pdfPath, invoice, clientInfo) {
         errors.push('Sub-código incorreto no DARE: ICMS Normal foi gerado por OPERAÇÃO, mas é devido à APURAÇÃO do mês.');
         debtMatched = false;
       }
+    } else if (isDifal) {
+      debtMatched = rawChunksText.toUpperCase().includes('DIFERENCIAL') || 
+                    rawChunksText.toUpperCase().includes('DIFAL') || 
+                    rawChunksText.includes('150') ||
+                    (invoice.nf && rawChunksText.includes(invoice.nf));
     } else {
       debtMatched = rawChunksText.toUpperCase().includes('SUBSTITUIÇÃO') || 
                     rawChunksText.toUpperCase().includes('SUBSTITUICAO') || 
@@ -211,7 +231,7 @@ function validateDareAgainstInvoice(pdfPath, invoice, clientInfo) {
     }
     checks.obsMatch = debtMatched;
     if (!debtMatched) {
-      const debtLabel = isFde ? 'FDE' : (isIcmsNormal ? 'ICMS NORMAL' : 'ICMS ST');
+      const debtLabel = isFde ? 'FDE' : (isIcmsNormal ? 'ICMS NORMAL' : (isDifal ? 'DIFAL' : 'ICMS ST'));
       errors.push(`Informações complementares do débito SPED (${debtLabel}) não encontradas no PDF.`);
     }
   } else {
@@ -241,9 +261,8 @@ function validateDareAgainstInvoice(pdfPath, invoice, clientInfo) {
                          rawChunksText.includes('REF COMPRA') ||
                          rawChunksText.includes('REF. COMPRA');
 
-    const isFecoep = String(invoice.codigoReceita) === '119' || invoice.tipoGuia === 'FECOEP';
     let chaveMatch = true;
-    if (isFecoep && invoice.chaveAcesso) {
+    if (invoice.chaveAcesso) {
       chaveMatch = rawChunksText.includes(invoice.chaveAcesso) || rawChunksText.replace(/\D/g, '').includes(invoice.chaveAcesso);
     }
 

@@ -79,8 +79,9 @@ function abbreviateProductName(name) {
 function buildObservationString(nf, groupParts, options = {}) {
   const revenueCode = String(options.revenueCode || '140');
   const isFecoep = revenueCode === '119' || revenueCode.toUpperCase().includes('FECOEP');
-  const chaveAcesso = options.chaveAcesso || '';
-  const chaveLine = isFecoep && chaveAcesso ? `\nChave NFe: ${chaveAcesso}` : '';
+  const isDifal = revenueCode === '150' || revenueCode.toUpperCase().includes('DIFAL');
+  const cleanChave = (options.chaveAcesso || '').toString().trim();
+  const chaveLine = cleanChave ? `\nChave NFe: ${cleanChave}` : '';
 
   if (isFecoep) {
     if (groupParts.length === 1) {
@@ -92,12 +93,22 @@ function buildObservationString(nf, groupParts, options = {}) {
     }
   }
 
+  if (isDifal) {
+    if (groupParts.length === 1) {
+      return `DARE ICMS DIFAL REF COMPRA DE ${groupParts[0].prodText} NA NF ${nf}${chaveLine}`;
+    } else {
+      const firstGroup = `${groupParts[0].prodText} NA NF ${nf}`;
+      const remainingGroups = groupParts.slice(1).map(g => `${g.prodText}`).join(' E ');
+      return `DARE ICMS DIFAL REF COMPRA DE ${firstGroup} E ${remainingGroups}${chaveLine}`;
+    }
+  }
+
   if (groupParts.length === 1) {
-    return `DARE ICMS ST REF COMPRA DE ${groupParts[0].prodText} NA NF ${nf} (MVA ${groupParts[0].mvaStr})`;
+    return `DARE ICMS ST REF COMPRA DE ${groupParts[0].prodText} NA NF ${nf} (MVA ${groupParts[0].mvaStr})${chaveLine}`;
   } else {
     const firstGroup = `${groupParts[0].prodText} NA NF ${nf} (MVA ${groupParts[0].mvaStr})`;
     const remainingGroups = groupParts.slice(1).map(g => `${g.prodText} (MVA ${g.mvaStr})`).join(' E ');
-    return `DARE ICMS ST REF COMPRA DE ${firstGroup} E ${remainingGroups}`;
+    return `DARE ICMS ST REF COMPRA DE ${firstGroup} E ${remainingGroups}${chaveLine}`;
   }
 }
 
@@ -108,34 +119,41 @@ function buildObservationString(nf, groupParts, options = {}) {
  * When multiple MVAs:
  * DARE ICMS ST REF COMPRA DE [P1, P2 E P3] NA NF [NF] (MVA X%) E [P4] (MVA Y%)
  * 
- * If length exceeds SEFAZ 400-char limit, abbreviates long product names
- * ensuring ALL products and their respective MVAs remain in the observation.
- * Guarantees output string is strictly <= 400 characters under all circumstances.
+ * If length exceeds SEFAZ 400-char limit, adaptively summarizes multi-item groups
+ * and abbreviates descriptions while guaranteeing:
+ * 1. NF number and all respective MVAs remain intact.
+ * 2. 44-digit Chave NFe is preserved when provided.
+ * 3. Output string is strictly <= 400 characters under all circumstances.
  */
 function formatObservation(nf, items, options = {}) {
   const opts = typeof options === 'string' ? { revenueCode: options } : (options || {});
   const revenueCode = String(opts.revenueCode || '140');
-  const chaveAcesso = opts.chaveAcesso || (items && items[0] && items[0].chaveAcesso) || '';
+  const chaveAcesso = opts.chaveAcesso || (items && items.find(it => it.chaveAcesso)?.chaveAcesso) || '';
   const isFecoep = revenueCode === '119' || revenueCode.toUpperCase().includes('FECOEP');
+  const isDifal = revenueCode === '150' || revenueCode.toUpperCase().includes('DIFAL');
+  const cleanChave = (chaveAcesso || '').toString().trim();
+  const chaveLine = cleanChave ? `\nChave NFe: ${cleanChave}` : '';
 
   // Filter items for FECOEP if needed
-  let itemsToFormat = items;
+  let itemsToFormat = items || [];
   if (isFecoep) {
-    const fecoepOnly = items.filter(it => (it.rawFecoep !== undefined ? it.rawFecoep : it.fecoep) > 0);
+    const fecoepOnly = itemsToFormat.filter(it => (it.rawFecoep !== undefined ? it.rawFecoep : it.fecoep) > 0);
     if (fecoepOnly.length > 0) {
       itemsToFormat = fecoepOnly;
     }
   }
 
-  // Group unique products by normalized MVA string
-  const mvaGroups = new Map(); // mvaStr -> Set(product names)
+  // Group unique products by normalized MVA string, tracking original item counts
+  const mvaGroups = new Map(); // mvaStr -> { prods: [], originalItemsCount: 0 }
   for (const it of itemsToFormat) {
     const mvaStr = it.mva ? it.mva.str : '0%';
     if (!mvaGroups.has(mvaStr)) {
-      mvaGroups.set(mvaStr, new Set());
+      mvaGroups.set(mvaStr, { prods: [], originalItemsCount: 0 });
     }
-    if (it.produto) {
-      mvaGroups.get(mvaStr).add(it.produto);
+    const entry = mvaGroups.get(mvaStr);
+    entry.originalItemsCount++;
+    if (it.produto && !entry.prods.includes(it.produto)) {
+      entry.prods.push(it.produto);
     }
   }
 
@@ -148,12 +166,18 @@ function formatObservation(nf, items, options = {}) {
 
   // Build original group parts
   let groupParts = [];
-  for (const [mvaStr, prodSet] of mvaGroups.entries()) {
-    const prods = Array.from(prodSet);
-    groupParts.push({ prods, mvaStr, prodText: joinProducts(prods) });
+  for (const [mvaStr, data] of mvaGroups.entries()) {
+    groupParts.push({
+      originalProds: [...data.prods],
+      originalCount: data.originalItemsCount,
+      prods: [...data.prods],
+      mvaStr,
+      prodText: joinProducts(data.prods),
+      isSummarized: false
+    });
   }
 
-  const buildOpts = { revenueCode, chaveAcesso };
+  const buildOpts = { revenueCode, chaveAcesso: cleanChave };
   let finalObservation = buildObservationString(nf, groupParts, buildOpts);
 
   // If already <= 400, return as-is
@@ -164,7 +188,7 @@ function formatObservation(nf, items, options = {}) {
   // Pass 1: Apply standard abbreviation dictionary to product names
   groupParts = groupParts.map(g => {
     const abbrevProds = g.prods.map(p => abbreviateProductName(p));
-    return { prods: abbrevProds, mvaStr: g.mvaStr, prodText: joinProducts(abbrevProds) };
+    return { ...g, prods: abbrevProds, prodText: joinProducts(abbrevProds) };
   });
 
   finalObservation = buildObservationString(nf, groupParts, buildOpts);
@@ -172,9 +196,44 @@ function formatObservation(nf, items, options = {}) {
     return finalObservation;
   }
 
-  // Pass 2: If still > 400, progressively reduce only the longest product names.
-  // We NEVER chop off the tail of the observation string (which holds MVAs, NF, and Chave).
-  // Instead, we iteratively reduce the longest product names until the entire string fits in 400 chars.
+  // Pass 2: Adaptive summarization when items are numerous
+  // Level 2A: For groups with originalCount >= 3 (or prods >= 3), retain top 2 products + E OUTROS (X ITENS)
+  const hasLargeGroups = groupParts.some(g => g.originalCount >= 3 || g.prods.length >= 3);
+  if (hasLargeGroups) {
+    groupParts = groupParts.map(g => {
+      if (g.originalCount >= 3 || g.prods.length >= 3) {
+        const top2 = g.prods.slice(0, 2);
+        const count = g.originalCount || g.prods.length;
+        const prodText = `${top2.join(', ')} E OUTROS (${count} ITENS)`;
+        return { ...g, prods: top2, prodText, isSummarized: true };
+      }
+      return g;
+    });
+
+    finalObservation = buildObservationString(nf, groupParts, buildOpts);
+    if (finalObservation.length <= 400) {
+      return finalObservation;
+    }
+
+    // Level 2B: If still > 400, reduce multi-item groups to top 1 product + E OUTROS (X ITENS)
+    groupParts = groupParts.map(g => {
+      if (g.originalCount >= 2 || g.prods.length >= 2) {
+        const top1 = [g.prods[0]];
+        const count = g.originalCount || g.prods.length;
+        const prodText = `${top1[0]} E OUTROS (${count} ITENS)`;
+        return { ...g, prods: top1, prodText, isSummarized: true };
+      }
+      return g;
+    });
+
+    finalObservation = buildObservationString(nf, groupParts, buildOpts);
+    if (finalObservation.length <= 400) {
+      return finalObservation;
+    }
+  }
+
+  // Pass 3: Progressively reduce only the longest product names if still > 400
+  // (Mainly for invoices with many single-item MVA groups or unusually long individual descriptions)
   while (finalObservation.length > 400) {
     let longestLen = 0;
     let targetG = -1;
@@ -191,7 +250,6 @@ function formatObservation(nf, items, options = {}) {
       }
     }
 
-    // Minimum product length before we can't shorten individual product names further
     if (longestLen <= 3) {
       break;
     }
@@ -202,43 +260,41 @@ function formatObservation(nf, items, options = {}) {
     const newLen = Math.max(3, longestLen - reduceBy);
 
     groupParts[targetG].prods[targetP] = currentProd.substring(0, newLen).replace(/[,.\-\/\s]+$/, '').trim();
-    groupParts[targetG].prodText = joinProducts(groupParts[targetG].prods);
+    if (groupParts[targetG].isSummarized) {
+      const count = groupParts[targetG].originalCount || groupParts[targetG].prods.length;
+      if (groupParts[targetG].prods.length === 1) {
+        groupParts[targetG].prodText = `${groupParts[targetG].prods[0]} E OUTROS (${count} ITENS)`;
+      } else {
+        groupParts[targetG].prodText = `${groupParts[targetG].prods.join(', ')} E OUTROS (${count} ITENS)`;
+      }
+    } else {
+      groupParts[targetG].prodText = joinProducts(groupParts[targetG].prods);
+    }
     finalObservation = buildObservationString(nf, groupParts, buildOpts);
   }
 
-  // Pass 3: In extreme edge cases where there are dozens of products and even 3-char names exceed 400 chars:
-  // Consolidate secondary products per group with "E OUTROS (X ITENS)" while strictly retaining NF, MVAs and Chave
-  if (finalObservation.length > 400) {
-    for (let gi = 0; gi < groupParts.length && finalObservation.length > 400; gi++) {
-      if (groupParts[gi].prods.length > 2) {
-        const kept = [groupParts[gi].prods[0]];
-        const othersCount = groupParts[gi].prods.length - 1;
-        groupParts[gi].prods = kept;
-        groupParts[gi].prodText = `${kept[0]} E OUTROS (${othersCount} ITENS)`;
-        finalObservation = buildObservationString(nf, groupParts, buildOpts);
-      }
-    }
-  }
-
-  // Pass 4: Final safety net: normalize whitespace
+  // Pass 4: Final safety net - whitespace normalization
   if (finalObservation.length > 400) {
     finalObservation = finalObservation.replace(/\s+/g, ' ').trim();
   }
 
-  // Absolute safety guarantee: truncate while ensuring critical suffix remains intact
+  // Absolute safety guarantee: truncate prefix while ensuring critical suffix remains strictly intact
   if (finalObservation.length > 400) {
+    let suffix = '';
     if (isFecoep) {
-      const chaveLine = chaveAcesso ? `\nChave NFe: ${chaveAcesso}` : '';
-      const suffix = ` NA NF N° ${nf}${chaveLine}`;
-      const maxPrefixLen = Math.max(10, 400 - suffix.length);
-      const prefix = finalObservation.substring(0, maxPrefixLen).replace(/[,.\-\/\s]+$/, '').trim();
-      finalObservation = `${prefix}${suffix}`;
+      suffix = ` NA NF N° ${nf}${chaveLine}`;
+    } else if (isDifal) {
+      suffix = ` NA NF ${nf}${chaveLine}`;
     } else {
-      const suffix = ` NA NF ${nf} (` + groupParts.map(g => `MVA ${g.mvaStr}`).join(' E ') + ')';
-      const maxPrefixLen = Math.max(10, 400 - suffix.length);
-      const prefix = finalObservation.substring(0, maxPrefixLen).replace(/[,.\-\/\s]+$/, '').trim();
-      finalObservation = `${prefix}${suffix}`;
+      suffix = ` NA NF ${nf} (` + groupParts.map(g => `MVA ${g.mvaStr}`).join(' E ') + `)${chaveLine}`;
     }
+    const maxPrefixLen = Math.max(10, 400 - suffix.length);
+    const prefix = finalObservation.substring(0, maxPrefixLen).replace(/[,.\-\/\s]+$/, '').trim();
+    finalObservation = `${prefix}${suffix}`;
+  }
+
+  if (finalObservation.length > 400) {
+    finalObservation = finalObservation.substring(0, 400);
   }
 
   return finalObservation;
@@ -331,7 +387,7 @@ function groupInvoices(parsedItems, ie, dueDate, revenueCode = '140', options = 
 
   for (const [nf, data] of grouped.entries()) {
     const finalAmount = Math.round((isFecoep ? data.rawSum : data.roundedSum) * 100) / 100;
-    const chaveAcesso = data.items[0]?.chaveAcesso || '';
+    const chaveAcesso = data.items.find(it => it.chaveAcesso)?.chaveAcesso || data.items[0]?.chaveAcesso || '';
     const observation = formatObservation(nf, data.items, { revenueCode: code, chaveAcesso });
     const hash = computeIdempotencyHash(ie, nf, dueDate, code, finalAmount);
 

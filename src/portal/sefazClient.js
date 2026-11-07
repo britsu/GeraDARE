@@ -181,19 +181,21 @@ class SefazClient {
         revenueCode: String(invoice.codigoReceita || config.defaultRevenueCode)
       });
 
-      // 1. Select Revenue Code (140, 119, 130, 643, or 110)
+      // 1. Select Revenue Code (140, 119, 130, 643, 110, or 150)
       const revenueCode = String(invoice.codigoReceita || config.defaultRevenueCode);
       const isFecoep = revenueCode === '119' || revenueCode.toUpperCase().includes('FECOEP');
       const isFde = revenueCode === '643' || revenueCode.toUpperCase().includes('FDE');
       const isStApuracao = revenueCode === '130';
       const isIcmsNormal = revenueCode === '110' || revenueCode.toUpperCase().includes('NORMAL');
-      const isStEntrada = !isFecoep && !isFde && !isStApuracao && !isIcmsNormal;
+      const isDifal = revenueCode === '150' || revenueCode.toUpperCase().includes('DIFAL');
+      const isStEntrada = !isFecoep && !isFde && !isStApuracao && !isIcmsNormal && !isDifal;
 
       let targetRevenueCode = '140';
       if (isFecoep) targetRevenueCode = '119';
       else if (isFde) targetRevenueCode = '643';
       else if (isStApuracao) targetRevenueCode = '130';
       else if (isIcmsNormal) targetRevenueCode = '110';
+      else if (isDifal) targetRevenueCode = '150';
 
       await page.evaluate((val) => {
         const el = document.getElementById('vDRECDGRCT');
@@ -208,12 +210,16 @@ class SefazClient {
       // For 119: '5' (III - ICMS SUBSTITUIÇÃO ENTRADA - OPERAÇÕES EXTERNAS - ADICIONAL DO FUNDO ES)
       // For 130: '1' (b - ICMS SUBSTITUIÇÃO TRIB. SAIDAS INTERNAS POR APURAÇÃO)
       // For 110: '1' (b- - ICMS NORMAL POR APURAÇÃO)
+      // For 150: '1' (b - DIFAL POR APURAÇÃO) ou '2' (a - DIFAL POR OPERAÇÃO)
       // For 643: '0' (sem subcódigo)
       let targetSubcode = '2';
       if (isFde) {
         targetSubcode = '0';
       } else if (isIcmsNormal || isStApuracao) {
         targetSubcode = '1';
+      } else if (isDifal) {
+        const wantOperacao = String(invoice.subCodigo) === '2' || invoice.tipo === 'DIFAL_OPERACAO';
+        targetSubcode = wantOperacao ? '2' : '1';
       } else if (isFecoep) {
         targetSubcode = '5';
       } else if (invoice.subCodigo) {
@@ -273,7 +279,23 @@ class SefazClient {
                 o.text.toUpperCase().includes('APURACAO')
               )
             );
-            return found ? found.value : (preferredSub || '1');
+            return found ? found.value : '1';
+          }, invoice.subCodigo);
+        } else if (isDifal) {
+          targetSubcode = await page.evaluate((preferredSub) => {
+            const elSub = document.getElementById('vSUBCDGRCT');
+            if (!elSub || !elSub.options) return preferredSub || '1';
+            const opts = Array.from(elSub.options);
+            const wantOperacao = String(preferredSub) === '2';
+            const found = opts.find(o => {
+              const txt = o.text.toUpperCase();
+              if (wantOperacao) {
+                return o.value === '2' || txt.startsWith('A') || txt.includes('OPERAÇÃO') || txt.includes('OPERACAO');
+              } else {
+                return o.value === '1' || txt.startsWith('B') || txt.includes('APURAÇÃO') || txt.includes('APURACAO');
+              }
+            });
+            return found ? found.value : (preferredSub || (wantOperacao ? '2' : '1'));
           }, invoice.subCodigo);
         }
       }
@@ -317,7 +339,7 @@ class SefazClient {
 
       let obs = invoice.observation;
       if (!obs || obs.length > 400) {
-        if (isFde || isStApuracao || isIcmsNormal) {
+        if (isFde || isStApuracao || isIcmsNormal || isDifal) {
           obs = (invoice.observation || '').substring(0, 400);
         } else {
           obs = formatObservation(invoice.nf, invoice.items || [], { revenueCode: targetRevenueCode, chaveAcesso: chaveNFe });
@@ -330,7 +352,7 @@ class SefazClient {
 
       // Helper function to fill all fields safely without triggering unawaited server AJAX calls
       const populateAllFields = async () => {
-        return await page.evaluate(({ targetRevenueCode, targetSubcode, isFecoep, isFde, isStApuracao, isIcmsNormal, isStEntrada, codMun, nfVal, chaveNFe, dueDate, refPeriod, valorStr, obs }) => {
+        return await page.evaluate(({ targetRevenueCode, targetSubcode, isFecoep, isFde, isStApuracao, isIcmsNormal, isDifal, isStEntrada, codMun, nfVal, chaveNFe, dueDate, refPeriod, valorStr, obs }) => {
           // Revenue code - do not fire server event here
           const elRct = document.getElementById('vDRECDGRCT');
           if (elRct && elRct.value !== targetRevenueCode) {
@@ -343,14 +365,16 @@ class SefazClient {
             elSub.value = targetSubcode;
           }
 
-          // Document Type (vDRETDCORI) for FECOEP, FDE, ST Apuração, and ICMS Normal
-          if (isFecoep || isFde || isStApuracao || isIcmsNormal) {
+          // Document Type (vDRETDCORI) for FECOEP, FDE, ST Apuração, ICMS Normal, and DIFAL
+          if (isFecoep || isFde || isStApuracao || isIcmsNormal || isDifal) {
             const elTdc = document.getElementById('vDRETDCORI');
             if (elTdc) {
               elTdc.value = '5'; // OUTROS A ESPECIFICAR
               if (typeof gx !== 'undefined') {
-                if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDRETDCORI', '5', 0);
-                if (gx.O) gx.O.AV32DreTdcOri = 5;
+                try {
+                  if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDRETDCORI', '5', 0);
+                  if (gx.O) gx.O.AV32DreTdcOri = 5;
+                } catch {}
               }
             }
           }
@@ -372,19 +396,23 @@ class SefazClient {
             }
             elMun.value = matchedCode;
             if (typeof gx !== 'undefined') {
-              if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDRECDGMUN', matchedCode, 0);
-              if (gx.O) gx.O.AV10DreCdgMun = parseInt(matchedCode, 10) || 0;
+              try {
+                if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDRECDGMUN', matchedCode, 0);
+                if (gx.O) gx.O.AV10DreCdgMun = parseInt(matchedCode, 10) || 0;
+              } catch {}
             }
           }
 
-          // Nº Documento (NF) - filled only for code 140 (entradas); left blank for 119, 643, 130
+          // Nº Documento (NF) - filled only for code 140 (entradas); left blank for 119, 643, 130, 110, 150
           const elDoc = document.getElementById('vDREDOCORI');
           if (elDoc) {
             if (isStEntrada) {
               elDoc.value = nfVal;
               if (typeof gx !== 'undefined') {
-                if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDREDOCORI', nfVal, 0);
-                if (gx.O) gx.O.AV15DreDocOri = nfVal;
+                try {
+                  if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDREDOCORI', nfVal, 0);
+                  if (gx.O) gx.O.AV15DreDocOri = nfVal;
+                } catch {}
               }
             } else {
               elDoc.value = '';
@@ -397,8 +425,10 @@ class SefazClient {
             if (elKey) {
               elKey.value = chaveNFe;
               if (typeof gx !== 'undefined') {
-                if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDRENFECHV', chaveNFe, 0);
-                if (gx.O) gx.O.AV132DreNfeChv = chaveNFe;
+                try {
+                  if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDRENFECHV', chaveNFe, 0);
+                  if (gx.O) gx.O.AV132DreNfeChv = chaveNFe;
+                } catch {}
               }
             }
           }
@@ -408,11 +438,13 @@ class SefazClient {
           if (elDate) {
             elDate.value = dueDate;
             if (typeof gx !== 'undefined') {
-              if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDREDTAVEN', dueDate, 0);
-              if (gx.date && gx.date.valid_date) {
-                gx.date.valid_date(elDate, 10, 'DMY', 0, 24, 'por', false, 0);
-              }
-              if (gx.O) gx.O.AV20DreDtaVen = dueDate;
+              try {
+                if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDREDTAVEN', dueDate, 0);
+                if (gx.date && gx.date.valid_date) {
+                  gx.date.valid_date(elDate, 10, 'DMY', 0, 24, 'por', false, 0);
+                }
+                if (gx.O) gx.O.AV20DreDtaVen = dueDate;
+              } catch {}
             }
           }
 
@@ -421,8 +453,10 @@ class SefazClient {
           if (elRef && refPeriod) {
             elRef.value = refPeriod;
             if (typeof gx !== 'undefined') {
-              if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDREREFCHAR', refPeriod, 0);
-              if (gx.O) gx.O.AV84DreRefChar = refPeriod;
+              try {
+                if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDREREFCHAR', refPeriod, 0);
+                if (gx.O) gx.O.AV84DreRefChar = refPeriod;
+              } catch {}
             }
           }
 
@@ -431,8 +465,10 @@ class SefazClient {
           if (elVal) {
             elVal.value = valorStr;
             if (typeof gx !== 'undefined') {
-              if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDREVLRPRI', valorStr, 0);
-              if (gx.O) gx.O.AV39DreVlrPri = parseFloat(valorStr.replace(/\./g, '').replace(',', '.')) || 0;
+              try {
+                if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDREVLRPRI', valorStr, 0);
+                if (gx.O) gx.O.AV39DreVlrPri = parseFloat(valorStr.replace(/\./g, '').replace(',', '.')) || 0;
+              } catch {}
             }
           }
 
@@ -441,8 +477,10 @@ class SefazClient {
           if (elObs) {
             elObs.value = obs;
             if (typeof gx !== 'undefined') {
-              if (gx.fn && gx.fn.setControlValue) gx.fn.setControlValue('vDREINFCOM', obs, 0);
-              if (gx.O) gx.O.AV23DreInfCom = obs;
+              try {
+                if (gx.fn && typeof gx.fn.setControlValue === 'function') gx.fn.setControlValue('vDREINFCOM', obs, 0);
+                if (gx.O) gx.O.AV23DreInfCom = obs;
+              } catch {}
             }
           }
         }, {
@@ -452,6 +490,7 @@ class SefazClient {
           isFde,
           isStApuracao,
           isIcmsNormal,
+          isDifal,
           isStEntrada,
           codMun,
           nfVal: invoice.nf,
