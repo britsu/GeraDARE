@@ -112,6 +112,7 @@ function extractTaxpayerFromWorkbook(wb, rawRows, headerRowIndex, items) {
   let uf = 'TO';
   let codMun = '';
   let nomeMun = '';
+  let competencia = '';
 
   // 1. Procurar em aba dedicada 'Contribuinte' ou 'Dados do Contribuinte' ou 'Metadados'
   if (wb && wb.SheetNames) {
@@ -135,6 +136,8 @@ function extractTaxpayerFromWorkbook(wb, rawRows, headerRowIndex, items) {
         } else if (/munic[ií]pio|c[oó]d.*mun/i.test(key) && val) {
           if (/^\d+$/.test(val)) codMun = val;
           else nomeMun = val;
+        } else if (/compet[eê]ncia|per[ií]odo/i.test(key) && !competencia && val) {
+          competencia = val;
         }
       }
     }
@@ -168,19 +171,27 @@ function extractTaxpayerFromWorkbook(wb, rawRows, headerRowIndex, items) {
     }
   }
 
-  // 3. Fallback: procurar nas colunas dos itens identificados na planilha
+  // 3. Prioridade concreta: se os itens da planilha tiverem colunas de Destinatário / CNPJ / IE,
+  // eles representam as notas fiscais autênticas do lote e prevalecem sobre metadados legados.
   if (items && items.length > 0) {
-    if (!ie) {
-      const itemWithIE = items.find(i => i.ieDestinatario && i.ieDestinatario.replace(/\D/g, '').length >= 7);
-      if (itemWithIE) ie = itemWithIE.ieDestinatario.replace(/\D/g, '');
-    }
-    if (!cnpj) {
-      const itemWithCnpj = items.find(i => i.cnpjDestinatario && i.cnpjDestinatario.replace(/\D/g, '').length >= 11);
-      if (itemWithCnpj) cnpj = itemWithCnpj.cnpjDestinatario.replace(/\D/g, '');
-    }
-    if (!razaoSocial) {
-      const itemWithClient = items.find(i => i.empresa || i.cliente);
-      if (itemWithClient) razaoSocial = (itemWithClient.empresa || itemWithClient.cliente).trim();
+    const itemWithCnpj = items.find(i => i.cnpjDestinatario && i.cnpjDestinatario.replace(/\D/g, '').length >= 11);
+    if (itemWithCnpj) cnpj = itemWithCnpj.cnpjDestinatario.replace(/\D/g, '');
+
+    const itemWithIE = items.find(i => i.ieDestinatario && i.ieDestinatario.replace(/\D/g, '').length >= 7);
+    if (itemWithIE) ie = itemWithIE.ieDestinatario.replace(/\D/g, '');
+
+    const itemWithClient = items.find(i => (i.empresa || i.cliente) && (i.empresa || i.cliente).trim() !== 'EMPRESA APURADA');
+    if (itemWithClient) razaoSocial = (itemWithClient.empresa || itemWithClient.cliente).trim();
+
+    if (!competencia) {
+      const itemWithDate = items.find(i => i.emissao || i.data);
+      if (itemWithDate) {
+        const rawDate = (itemWithDate.emissao || itemWithDate.data || '').toString();
+        const matchBR = rawDate.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+        if (matchBR) {
+          competencia = `${matchBR[2]}/${matchBR[3]}`;
+        }
+      }
     }
   }
 
@@ -199,7 +210,8 @@ function extractTaxpayerFromWorkbook(wb, rawRows, headerRowIndex, items) {
     razaoSocial: razaoSocial || '',
     uf: uf || 'TO',
     codMun: codMun || '',
-    nomeMun: nomeMun || ''
+    nomeMun: nomeMun || '',
+    competencia: competencia || ''
   };
 }
 
